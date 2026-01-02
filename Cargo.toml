@@ -1,0 +1,24 @@
+[package]
+name = "serial_16550"
+description = """
+Low-level driver for 16550 UART devices, which operate as serial ports and are
+accessible via x86 I/O port addresses. These ports are commonly referred to as
+COM ports.
+"""
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85.1"
+keywords = ["uart-16550", "serial", "com", "posix"]
+categories = ["embedded", "hardware-support", "no-std", "no-std::no-alloc"]
+readme = "README.md"
+license = "MIT"
+homepage = "https://github.com/phip1611/serial_16550"
+repository = "https://github.com/phip1611/serial_16550"
+documentation = "https://docs.rs/serial_16550"
+authors = [
+  "Philipp Schuster <phip1611@gmail.com>",
+]
+
+[dependencies]
+bitflags = { version = "2.10", default-features = false, features = [] }
+x86 ={ version = "0.52", default-features = false, features = [] }
