@@ -29,11 +29,15 @@ jobs:
           key: "${{ matrix.runs-on }}-${{ matrix.rust }}"
       - name: Build
         run: cargo build --all-targets --verbose
-      # use some arbitrary no_std target
-      - name: Install no_std target thumbv7em-none-eabihf
-        run: rustup target add thumbv7em-none-eabihf
+      # use some no_std target
+      - name: Install no_std targets i686-unknown-uefi & x86_64-unknown-uefi
+        run: |
+          rustup target add x86_64-unknown-uefi
+          rustup target add i686-unknown-uefi
       - name: Build (no_std)
-        run: cargo build --verbose --target thumbv7em-none-eabihf
+        run: |
+          cargo build --verbose --target x86_64-unknown-uefi
+          cargo build --verbose --target i686-unknown-uefi
       - name: Run tests
         run: cargo test --verbose
 

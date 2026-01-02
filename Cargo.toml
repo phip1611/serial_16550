@@ -18,6 +18,7 @@ documentation = "https://docs.rs/serial_16550"
 authors = [
   "Philipp Schuster <phip1611@gmail.com>",
 ]
+resolver = "3"
 
 [dependencies]
 bitflags = { version = "2.10", default-features = false, features = [] }
