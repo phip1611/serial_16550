@@ -26,6 +26,10 @@
 //! emulation, such as handling of backspace and newlines, is out of scope.
 //!
 //! See [`Uart16550Port`].
+//!
+//! # Datasheet / Specification
+//!
+//! More info in <https://caro.su/msx/ocm_de1/16550.pdf>.
 
 #![no_std]
 #![deny(
@@ -98,6 +102,10 @@ pub const FREQUENCY: u32 = 1_843_200;
 /// let n = device.read_bytes(&mut read_buffer);
 /// let read = &read_buffer[..n];
 /// ```
+///
+/// # Datasheet / Specification
+///
+/// More info in <https://caro.su/msx/ocm_de1/16550.pdf>.
 #[derive(Debug)]
 pub struct Uart16550Port(u16);
 
@@ -151,6 +159,10 @@ impl Uart16550Port {
     /// Initializes the devices so that afterward, data can be received and
     /// transmitted.
     ///
+    /// Some properties cannot be configured through [`SerialConfig`] and are
+    /// coded according to best practices. Future versions of this library may
+    /// make these configurable if greater flexibility is needed.
+    ///
     /// To test your hardware, you can call [`Self::test_loopback`] to verify.
     ///
     /// # Example
@@ -198,21 +210,27 @@ impl Uart16550Port {
         // - **set:   :** data bits, stop bits
         // - **ignored:** parity, stick bit, send break
         unsafe {
-            let mut line_ctrl = cfg.data_bits.raw();
+            let mut line_ctrl = 0;
+            line_ctrl |= cfg.data_bits.raw() & 0b11;
             line_ctrl |= (cfg.stop_bits.raw()) << 2;
             outb(self.base() + reg::LINE_CTRL, line_ctrl);
         }
 
-        // Set fifo control register
+        // Set FIFO control register:
+        // We want the FIFO feature to not generate an interrupt at every received byte but
+        // only every `n` bytes to prevent interrupt handling overhead.
+        //
+        // We use the maximum FIFO size of 14 byte. Nevertheless, an interrupt will
+        // occure after a short timeout for shorter messages as well.
         unsafe {
             let mut fifo_ctrl = 0;
-            // enable fifo
+            // Enable FIFO for receiver and transmitter.
             fifo_ctrl |= 1;
-            // receiver reset: receiver FIFO
+            // Reset (clear) the receiver FIFO.
             fifo_ctrl |= 1 << 1;
-            // transmitter reset: FIFO mode
+            // Reset (clear) the transmitter FIFO.
             fifo_ctrl |= 1 << 2;
-            // Receiver trigger level: 14 bytes or more in fifo => interrupt
+            // Receiver trigger level: if 14 bytes or more in FIFO => raise interrupt
             fifo_ctrl |= 0b11 << 6;
             outb(self.base() + reg::FIFO_CTRL, fifo_ctrl);
         }
