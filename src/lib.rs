@@ -221,7 +221,7 @@ impl Uart16550Port {
         // only every `n` bytes to prevent interrupt handling overhead.
         //
         // We use the maximum FIFO size of 14 byte. Nevertheless, an interrupt will
-        // occure after a short timeout for shorter messages as well.
+        // be raised after a small timeout for shorter messages as well.
         unsafe {
             let mut fifo_ctrl = 0;
             // Enable FIFO for receiver and transmitter.
