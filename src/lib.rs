@@ -242,7 +242,7 @@ impl Uart16550Port {
             modem_ctrl |= 1 << 0;
             // Device is willing to transmit: Signal request to send
             modem_ctrl |= 1 << 1;
-            // Enable interrupt routing to CPU.
+            // Global interrupt enable: Enable interrupt routing to CPU.
             modem_ctrl |= 1 << 3;
 
             outb(self.base() + reg::MODEM_CTRL, modem_ctrl);
@@ -254,12 +254,18 @@ impl Uart16550Port {
     // #########################################################################
     // public helpers
 
-    /// Enables or disables interrupts.
+    /// Enables or disables interrupts (for received data).
     #[inline]
     pub fn set_interrupts(&mut self, enabled: bool) {
-        let val = if enabled { 1 } else { 0 };
-        // Disable interrupts
+        // Interrupt Enable Register (IER).
+        let mut ier = 0;
+        // "data ready" interrupt
+        // Although the device supports more interrupts, this is the only practical
+        // relevant interrupt. 
+        ier |= if enabled { 1 } else { 0 }
         unsafe {
+            // We could also use the global interrupt enable bit in
+            // the modem control register - but effectively, it doesn't metter.
             outb(self.base() + reg::INTERRUPT_ENABLE, val);
         }
     }
