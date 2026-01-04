@@ -36,7 +36,7 @@ fn main() {
   // SAFETY: We have exclusive access to the device.
   unsafe { device.init(&SerialConfig::default()) }
   // SAFETY: We have exclusive access to the device.
-  unsafe { device.test_loopback(&SerialConfig::default()) }
+  unsafe { device.test_loopback() }
 
   // Write something to the device.
   device.write_bytes_saturating(b"hello");
