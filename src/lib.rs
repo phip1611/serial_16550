@@ -266,7 +266,7 @@ impl Uart16550Port {
         unsafe {
             // We could also use the global interrupt enable bit in
             // the modem control register - but effectively, it doesn't metter.
-            outb(self.base() + reg::INTERRUPT_ENABLE, val);
+            outb(self.base() + reg::INTERRUPT_ENABLE, ier);
         }
     }
 
