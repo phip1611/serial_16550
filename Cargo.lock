@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "serial_16550"
+name = "uart16550_driver"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.10.0",

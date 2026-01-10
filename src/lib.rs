@@ -21,7 +21,7 @@
 //! ## Scope & Limitations
 //!
 //! Typically, a serial port is not only used for simple ASCII transfer but
-//! VT102-like terminal emulation. `serial_16550` only provides the low-level
+//! VT102-like terminal emulation. `uart16550_driver` only provides the low-level
 //! hardware interface to read and write bytes. Anything regarding terminal
 //! emulation, such as handling of backspace and newlines, is out of scope.
 //!
@@ -75,7 +75,7 @@ pub const FREQUENCY: u32 = 1_843_200;
 ///
 /// # Example
 /// ```rust,no_run
-/// use serial_16550::{SerialConfig, Uart16550Port};
+/// use uart16550_driver::{SerialConfig, Uart16550Port};
 /// // SAFETY: We have exclusive access to the device.
 /// let mut device = unsafe { Uart16550Port::new(0x3f8) };
 ///
@@ -108,7 +108,7 @@ impl Uart16550Port {
     ///
     /// # Example
     /// ```rust,no_run
-    /// use serial_16550::{SerialConfig, Uart16550Port};
+    /// use uart16550_driver::{SerialConfig, Uart16550Port};
     /// // SAFETY: We have exclusive access to the device.
     /// let mut device = unsafe { Uart16550Port::new(0x3f8) };
     ///
@@ -155,7 +155,7 @@ impl Uart16550Port {
     ///
     /// # Example
     /// ```rust,no_run
-    /// use serial_16550::{SerialConfig, Uart16550Port};
+    /// use uart16550_driver::{SerialConfig, Uart16550Port};
     /// // SAFETY: We have exclusive access to the device.
     /// let mut device = unsafe { Uart16550Port::new(0x3f8) };
     ///
@@ -250,7 +250,7 @@ impl Uart16550Port {
     ///
     /// # Example
     /// ```rust,no_run
-    /// use serial_16550::{SerialConfig, Uart16550Port};
+    /// use uart16550_driver::{SerialConfig, Uart16550Port};
     /// // SAFETY: We have exclusive access to the device.
     /// let mut device = unsafe { Uart16550Port::new(0x3f8) };
     ///
@@ -697,6 +697,12 @@ pub struct SerialConfig {
     pub data_bits: DataBits,
     /// Amount of stop bits.
     pub stop_bits: StopBits,
+}
+
+impl SerialConfig {
+    pub const EIGHT_N_1_115200: Self = Self {
+        baud_rate: BaudRate::Baud115200,
+    }
 }
 
 bitflags! {

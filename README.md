@@ -1,4 +1,4 @@
-# `serial_16550`
+# `uart16550_driver`
 
 Low-level driver for [**16550 UART devices**][uart], which operate as serial ports and
 are accessible via x86 I/O port addresses. These ports are commonly referred to
@@ -21,7 +21,7 @@ especially useful for debugging or operating system learning projects.
 ## Scope & Limitations
 
 Typically, a serial port is not only used for simple ASCII transfer but
-VT102-like terminal emulation. `serial_16550` only provides the low-level
+VT102-like terminal emulation. `uart16550_driver` only provides the low-level
 hardware interface to read and write bytes. Anything regarding terminal
 emulation, such as handling of backspace and newlines, is out of scope.
 
@@ -29,7 +29,7 @@ emulation, such as handling of backspace and newlines, is out of scope.
 
 ```rust
 fn main() {
-  use serial_16550::{SerialConfig, Uart16550Port};
+  use uart16550_driver::{SerialConfig, Uart16550Port};
   let device = Uart16550Port::new(0x3f8);
 
   // Default config has sane values.
