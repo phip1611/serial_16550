@@ -4,6 +4,10 @@
 //!
 //! [`Uart16550`]: crate::Uart16550
 
+use crate::spec::CLK_FREQUENCY_HZ;
+use crate::spec::registers::{FifoTriggerLevel, IER, Parity, WordLength};
+use core::cmp::Ordering;
+
 /// The speed of data transmission, measured in symbols per second (or bits, in
 /// the case of simple UARTs).
 ///
@@ -65,7 +69,7 @@ impl BaudRate {
             300 => Self::Baud300,
             150 => Self::Baud150,
             110 => Self::Baud110,
-            baud_rate => Self::Custom(baud_rate)
+            baud_rate => Self::Custom(baud_rate),
         }
     }
 }
@@ -91,6 +95,18 @@ pub struct Config {
     // Device Config
     /// Which interrupts to enable.
     pub interrupts: IER,
+    /// The frequency which typically is [`CLK_FREQUENCY_HZ`].
+    pub frequency: u32,
+    /// The optional prescaler divison factor.
+    ///
+    /// This is a non-standard functionality (i.e., it is not present in the
+    /// industry standard 16550 UART). Its purpose is to provide a second
+    /// division factor that could be useful in systems which are driven by a
+    /// clock multiple of one of the typical frequencies used with this UART.
+    pub prescaler_division_factor: Option<u32>,
+    /// The [`FifoTriggerLevel`]. If this is `None`, the FIFO feature will not
+    /// be enabled.
+    pub fifo_trigger_level: Option<FifoTriggerLevel>,
 
     // Transmission Config
     /// The baud rate to use.
@@ -103,12 +119,6 @@ pub struct Config {
     pub extra_stop_bits: bool,
     /// Whether parity bits should be used.
     pub parity: Parity,
-
-    // Other config
-    /// Whether the driver should expect the remote to be a proper modem
-    /// (terminal) to perform more checks.
-    pub remote_modem_checks: bool,
-
 }
 
 impl Default for Config {
@@ -116,13 +126,14 @@ impl Default for Config {
         // Default is 8-N-1 connection and n data bits.
         Self {
             interrupts: IER::DATA_READY,
+            frequency: CLK_FREQUENCY_HZ,
+            prescaler_division_factor: None,
+            fifo_trigger_level: Some(FifoTriggerLevel::Fourteen),
 
-            baud_rate: Baud115200,
+            baud_rate: BaudRate::Baud115200,
             data_bits: WordLength::EightBits,
             extra_stop_bits: false,
             parity: Parity::Disabled,
-
-            remote_modem_checks: true,
         }
     }
 }

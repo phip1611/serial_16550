@@ -45,55 +45,20 @@
 #[cfg(test)]
 extern crate std;
 
-use core::marker::PhantomData;
-use core::error::Error;
-use core::fmt::Display;
-use crate::backend::{Backend, MmioAddress, MmioBackend, PioBackend, PortIoAddress, RegisterAddress};
-use crate::config::Config;
-use crate::spec::{calc_divisor, registers};
-use crate::spec::registers::{offsets, Parity, WordLength, DATA, IER, LCR};
+use core::str::{from_utf8};
+use crate::backend::{
+    Backend, MmioAddress, MmioBackend, PioBackend, PortIoAddress,
+};
+pub use crate::config::Config;
+pub use crate::error::*;
+use crate::spec::registers::{FCR, IER, ISR, LCR, LSR, MCR, MSR, offsets};
+use crate::spec::{calc_divisor};
 
 pub mod spec;
+
 mod backend;
 mod config;
-
-
-/// The specified address is invalid because it is either null or doesn't offer
-/// [`registers::offsets::MAX`] subsequent addresses.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct InvalidAddressError<A: RegisterAddress>(A);
-
-impl<A: RegisterAddress> Display for InvalidAddressError<A> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "invalid register address: {:x?}", self.0)
-    }
-}
-
-/// Errors that can happen when a [`Uart16550`] initialized in
-/// [`Uart16550::init`].
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum InitError {
-    /// The device could not be detected.
-    DeviceNotPresent,
-    /// The loopback self-test after initialization failed.
-    LoopbackTestFailed,
-}
-
-impl Display for InitError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            InitError::DeviceNotPresent => {
-                write!(f, "the device could not be detected")
-            }
-            InitError::LoopbackTestFailed => {
-                write!(f, "the loopback self-test after initialization failed")
-            }
-        }
-    }
-}
-
-impl Error for InitError {}
-
+mod error;
 
 /// Abstraction over a [16550 UART device][uart].
 ///
@@ -101,65 +66,65 @@ impl Error for InitError {}
 ///
 /// [uart]: https://en.wikipedia.org/wiki/16550_UART
 #[derive(Debug)]
-pub struct Uart16550<A: RegisterAddress, B: Backend<A>> {
+pub struct Uart16550<B: Backend> {
     backend: B,
     // The currently active config.
     config: Config,
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-impl Uart16550<PortIoAddress, PioBackend> {
+impl Uart16550<PioBackend> {
     /// Creates a new [`Uart16550`] backed by x86 port I/O.
     ///
     /// # Safety
     ///
     /// Callers must ensure that the address is valid and safe to use.
-    pub unsafe fn new_port(base_port: u16, config: Config) -> Result<Self, InvalidAddressError<PortIoAddress>> {
+    pub unsafe fn new_port(
+        base_port: u16,
+        config: Config,
+    ) -> Result<Self, InvalidAddressError<PortIoAddress>> {
         if base_port.checked_add(offsets::MAX as u16).is_none() {
             return Err(InvalidAddressError(PortIoAddress(base_port)));
         }
 
         let backend = PioBackend(PortIoAddress(base_port));
 
-        Ok(Self {
-            backend,
-            config,
-        })
+        Ok(Self { backend, config })
     }
 }
 
-impl<B: Backend<MmioAddress>> Uart16550<MmioAddress, B> {
+impl Uart16550<MmioBackend> {
     /// Creates a new [`Uart16550`] backed by MMIO.
     ///
     /// # Safety
     ///
     /// Callers must ensure that the address is valid and safe to use.
-    pub unsafe fn new_mmio(base_address: *mut u8, config: Config) -> Result<Self, InvalidAddressError<MmioAddress>> {
+    pub unsafe fn new_mmio(
+        base_address: *mut u8,
+        config: Config,
+    ) -> Result<Self, InvalidAddressError<MmioAddress>> {
         if base_address.is_null() {
             return Err(InvalidAddressError(MmioAddress(base_address)));
         }
-        if (base_address as usize).checked_add(offsets::MAX).is_none()
-        {
+        if (base_address as usize).checked_add(offsets::MAX).is_none() {
             return Err(InvalidAddressError(MmioAddress(base_address)));
         }
 
         let backend = MmioBackend(MmioAddress(base_address));
 
-        Ok(Self {
-            backend,
-            config,
-        })
-
+        Ok(Self { backend, config })
     }
 }
 
-impl<A: RegisterAddress, B: Backend<A>> Uart16550<A, B> {
+impl<B: Backend> Uart16550<B> {
+    /* ----- Init, Setup, Tests --------------------------------------------- */
+
     /// Initializes the devices according to the provided [`Config`] including a
     /// few typical as well as opinionated settings so that afterwords, the
     /// device can properly receive data and send data.
     ///
-    /// It is recommended to call [`Self::test_loopback`] next to verify.
-    ///
+    /// It is recommended to call [`Self::test_loopback`] next to check the
+    /// device.
     ///
     /// # Safety
     ///
@@ -170,788 +135,327 @@ impl<A: RegisterAddress, B: Backend<A>> Uart16550<A, B> {
     /// the other side. Otherwise, garbage will be received.
     pub fn init(&mut self) -> Result<(), InitError> {
         // SPR test: write something and try to read it again.
+        // SAFETY: We operate on valid register addresses.
         unsafe {
             let write = 0x42;
-            self.backend.write_register(offsets::SPR as u8, write);
-            let read =self.backend.read_register(offsets::SPR as u8);
+            self.backend.write(offsets::SPR as u8, write);
+            let read = self.backend.read(offsets::SPR as u8);
 
             if read != write {
-                return Err(InitError::DeviceNotPresent)
+                return Err(InitError::DeviceNotPresent);
             }
+        }
+
+        // Disable all interrupts.
+        // SAFETY: We operate on valid register addresses.
+        unsafe {
+            self.backend.write(offsets::IER as u8, 0);
+        }
+
+        // Set baud rate.
+        // SAFETY: We operate on valid register addresses.
+        unsafe {
+            // Set Divisor Latch Access Bit (DLAB) to access DLL and DLM next
+            self.backend.write(offsets::LCR as u8, LCR::DLAB.bits());
+
+            let divisor = calc_divisor(
+                self.config.frequency,
+                self.config.baud_rate.to_integer(),
+                self.config.prescaler_division_factor,
+            )
+            .map_err(|e| InitError::InvalidBaudRate(e))?;
+            let low = (divisor & 0xff) as u8;
+            let high = ((divisor >> 8) & 0xff) as u8;
+            self.backend.write(offsets::DLL as u8, low);
+            self.backend.write(offsets::DLM as u8, high);
+
+            // Clear DLAB
+            self.backend.write(offsets::LCR as u8, 0);
+        }
+
+        // Set line control register.
+        // SAFETY: We operate on valid register addresses.
+        unsafe {
+            let mut lcr = LCR::from_bits_retain(0);
+            lcr.set_word_length(self.config.data_bits);
+            if self.config.extra_stop_bits {
+                lcr |= LCR::MORE_STOP_BITS;
+            }
+            lcr.set_parity(self.config.parity);
+            // don't set break
+            // don't set DLAB
+            self.backend.write(offsets::LCR as u8, lcr.bits());
+        }
+
+        // Set fifo control register.
+        // SAFETY: We operate on valid register addresses.
+        unsafe {
+            let mut fcr = FCR::from_bits_retain(0);
+            if self.config.fifo_trigger_level.is_some() {
+                fcr |= FCR::FIFO_ENABLE;
+            }
+            fcr |= FCR::RX_FIFO_RESET;
+            fcr |= FCR::TX_FIFO_RESET;
+            // don't set DMA mode
+            if let Some(level) = self.config.fifo_trigger_level {
+                fcr.set_fifo_trigger_level(level);
+            }
+
+            self.backend.write(offsets::FCR as u8, fcr.bits());
+        }
+
+        // Set modem control register.
+        // SAFETY: We operate on valid register addresses.
+        unsafe {
+            let mut mcr = MCR::from_bits_retain(0);
+            // signal that we are powered one
+            mcr |= MCR::DTR;
+            // signal that we are ready and configured
+            mcr |= MCR::RTS;
+            // enable interrupt routing to the interrupt controller
+            // (so far individual interrupts are still disabled in IER)
+            mcr |= MCR::OUT_2_INT_ENABLE;
+
+            self.backend.write(offsets::MCR as u8, mcr.bits());
+        }
+
+        // Set interrupts.
+        // SAFETY: We operate on valid register addresses.
+        unsafe {
+            self.backend
+                .write(offsets::IER as u8, self.config.interrupts.bits());
         }
 
         Ok(())
     }
-}
 
-/*
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-compile_error!("port I/O is only available on x86 and x86_64");
+    /// Tests the device in loopback mode.
+    ///
+    /// The FIFO must be configured for this test.
+    ///
+    /// It is recommended to call this function after [`Self::init`].
+    pub fn test_loopback(&mut self) -> Result<(), LoopbackFailedError> {
+        /// Single test byte. Chosen arbitrarily.
+        const TEST_BYTE: u8 = 42;
+        /// Test message. Must be smaller then [`FIFO_SIZE`].
+        const TEST_MESSAGE: &str = "hello world!";
 
-use bitflags::bitflags;
-use core::error::Error;
-use core::fmt::{Debug, Display, Formatter};
-use core::{fmt, hint};
-use x86::io::{inb, outb};
-
-/// The maximum size of the internal read and write FIFO.
-///
-/// Each channel has its own queue.
-pub const FIFO_SIZE: usize = 16;
-
-/// Internal frequency of the clock (by spec).
-pub const FREQUENCY: u32 = 1_843_200;
-
-/// Low-level driver for 16550 UART devices, which function as serial ports and
-/// are accessible via x86 I/O port addresses. These ports are commonly referred
-/// to as COM ports.
-///
-/// One device instance corresponds to one device, typically mapped via eight
-/// I/O ports.
-///
-/// A port must be initialized, so don't forget to call [`Uart16550Port::init`].
-/// To test your hardware, it is also recommended to call
-/// [`Uart16550Port::test_loopback`] afterwards.
-///
-/// ## Terminal / VT-102 Handling
-///
-/// This type does not take care of any VT102-like terminal emulation. You need
-/// to handle terminal-friendly newlines, backspace support, etc. on your own.
-///
-/// # Example
-/// ```rust,no_run
-/// use uart16550_driver::{SerialConfig, Uart16550Port};
-/// // SAFETY: We have exclusive access to the device.
-/// let mut device = unsafe { Uart16550Port::new(0x3f8) };
-///
-/// // Default config has sane values.
-/// // SAFETY: We have exclusive access to the device.
-/// unsafe { device.init(&SerialConfig::default()) }
-/// // SAFETY: We have exclusive access to the device.
-/// unsafe { device.test_loopback() }
-///     .expect("device should operate properly");
-///
-/// // Write something to the device.
-/// device.write_bytes_saturating(b"hello");
-///
-/// // Format something directly onto the device!
-/// # use core::fmt::Write;
-/// write!(&mut device, "{}", "hello");
-///
-/// // Read data from the device.
-/// let mut read_buffer = [0_u8; 128];
-/// let n = device.read_bytes(&mut read_buffer);
-/// let read = &read_buffer[..n];
-/// ```
-#[derive(Debug)]
-pub struct Uart16550Port(u16);
-
-impl Uart16550Port {
-    /// Creates a serial port.
-    ///
-    /// Don't forget to call [`Self::init`] next.
-    ///
-    /// # Example
-    /// ```rust,no_run
-    /// use uart16550_driver::{SerialConfig, Uart16550Port};
-    /// // SAFETY: We have exclusive access to the device.
-    /// let mut device = unsafe { Uart16550Port::new(0x3f8) };
-    ///
-    /// // Default config has sane values.
-    /// // SAFETY: We have exclusive access to the device.
-    /// unsafe { device.init(&SerialConfig::default()) }
-    /// // SAFETY: We have exclusive access to the device.
-    /// unsafe { device.test_loopback() }
-    ///     .expect("device should operate properly");
-    ///
-    /// // Write something to the device.
-    /// device.write_bytes_saturating(b"hello");
-    ///
-    /// // Format something directly onto the device!
-    /// # use core::fmt::Write;
-    /// write!(&mut device, "{}", "hello");
-    ///
-    /// // Read data from the device.
-    ///  let mut read_buffer = [0_u8; 128];
-    ///  let n = device.read_bytes(&mut read_buffer);
-    ///  let read = &read_buffer[..n];
-    /// ```
-    ///
-    /// # Safety
-    ///
-    /// Callers must ensure that using this type with the underlying hardware
-    /// is done only in a context where such operations are valid and safe.
-    #[must_use]
-    pub const unsafe fn new(base: u16) -> Self {
-        Self(base)
-    }
-
-    /// Returns the base port I/O address.
-    #[must_use]
-    #[inline]
-    pub const fn base(&self) -> u16 {
-        self.0
-    }
-
-    /// Initializes the devices so that afterward, data can be received and
-    /// transmitted.
-    ///
-    /// To test your hardware, you can call [`Self::test_loopback`] to verify.
-    ///
-    /// # Example
-    /// ```rust,no_run
-    /// use uart16550_driver::{SerialConfig, Uart16550Port};
-    /// // SAFETY: We have exclusive access to the device.
-    /// let mut device = unsafe { Uart16550Port::new(0x3f8) };
-    ///
-    /// // Default config has sane values.
-    /// // SAFETY: We have exclusive access to the device.
-    /// unsafe { device.init(&SerialConfig::default()) }
-    /// // SAFETY: We have exclusive access to the device.
-    /// unsafe { device.test_loopback() }
-    ///     .expect("device should operate properly");
-    /// ```
-    ///
-    /// # Safety
-    ///
-    /// Callers must ensure that using this type with the underlying hardware
-    /// is done only in a context where such operations are valid and safe.
-    ///
-    /// Further, the serial config must match the expectations of the wire and
-    /// the other side. Otherwise, garbage will be received.
-    pub unsafe fn init(&mut self, cfg: &SerialConfig) {
-        self.set_interrupts(false);
-
-        // Set baud rate registers
+        // SAFETY: We operate on valid register addresses.
         unsafe {
-            // Enable Divisor Latch Access Bit (DLAB):
-            // Next, the first two registers map to the low and the high byte
-            // of the baud rate divisor.
-            outb(self.base() + reg::LINE_CTRL, 1 << 7);
+            let old_mcr = self.mcr();
+            self.backend
+                .write(offsets::MCR as u8, MCR::LOOP_BACK.bits());
 
-            let divisor = cfg.baud_rate.raw();
-            let low = divisor & 0xff;
-            let high = (divisor >> 8) & 0xff;
-            outb(self.base() + reg::BAUD_LOW, low as u8);
-            outb(self.base() + reg::BAUD_HIGH, high as u8);
-
-            // Disable Divisor Latch Access Bit (DLAB):
-            outb(self.base() + reg::LINE_CTRL, 0);
-        }
-
-        // Set line control  register:
-        // - **set:   :** data bits, stop bits
-        // - **ignored:** parity, stick bit, send break
-        unsafe {
-            let mut line_ctrl = cfg.data_bits.raw();
-            line_ctrl |= (cfg.stop_bits.raw()) << 2;
-            outb(self.base() + reg::LINE_CTRL, line_ctrl);
-        }
-
-        // Set fifo control register
-        unsafe {
-            let mut fifo_ctrl = 0;
-            // enable fifo
-            fifo_ctrl |= 1;
-            // receiver reset: receiver FIFO
-            fifo_ctrl |= 1 << 1;
-            // transmitter reset: FIFO mode
-            fifo_ctrl |= 1 << 2;
-            // Receiver trigger level: 14 bytes or more in fifo => interrupt
-            fifo_ctrl |= 0b11 << 6;
-            outb(self.base() + reg::FIFO_CTRL, fifo_ctrl);
-        }
-
-        // Set modem control register
-        unsafe {
-            let mut modem_ctrl = 0;
-            // Device is present and powered: Data terminal ready (DTR)
-            modem_ctrl |= 1 << 0;
-            // Device is willing to transmit: Signal request to send
-            modem_ctrl |= 1 << 1;
-            // Enable interrupt routing to CPU.
-            modem_ctrl |= 1 << 3;
-
-            outb(self.base() + reg::MODEM_CTRL, modem_ctrl);
-        }
-
-        self.set_interrupts(true);
-    }
-
-    // #########################################################################
-    // public helpers
-
-    /// Enables or disables interrupts.
-    #[inline]
-    pub fn set_interrupts(&mut self, enabled: bool) {
-        let val = if enabled { 1 } else { 0 };
-        // Disable interrupts
-        unsafe {
-            outb(self.base() + reg::INTERRUPT_ENABLE, val);
-        }
-    }
-
-    /// Tests the serial port by sending a message to itself.
-    ///
-    /// # Example
-    /// ```rust,no_run
-    /// use uart16550_driver::{SerialConfig, Uart16550Port};
-    /// // SAFETY: We have exclusive access to the device.
-    /// let mut device = unsafe { Uart16550Port::new(0x3f8) };
-    ///
-    /// // Default config has sane values.
-    /// // SAFETY: We have exclusive access to the device.
-    /// unsafe { device.init(&SerialConfig::default()) }
-    /// // SAFETY: We have exclusive access to the device.
-    /// unsafe { device.test_loopback() }
-    ///     .expect("device should operate properly");
-    /// ```
-    ///
-    /// # Safety
-    ///
-    /// Callers must ensure that using this type with the underlying hardware
-    /// is done only in a context where such operations are valid and safe.
-    ///
-    /// Further, as long as this runs, the configuration of the serial device
-    /// changes. No other instances should access the device in that time.
-    pub unsafe fn test_loopback(&mut self) -> Result<(), LoopbackFailed> {
-        self.set_interrupts(false);
-
-        // Enable loopback.
-        unsafe {
-            let mut modem_ctrl = inb(self.base() + reg::MODEM_CTRL);
-            // set the loop bit -> data never leaves the cip
-            modem_ctrl |= 1 << 4;
-            outb(self.base() + reg::MODEM_CTRL, modem_ctrl);
-        }
-
-        // Drain device: read any data that might be on the device for whatever reason first.
-        while self.try_read_byte().is_ok() {}
-
-        // Perform the actual write and read cycle
-        let matches = {
-            const MESSAGE: &[u8; 6] = b"hello!";
-            debug_assert!(MESSAGE.len() <= FIFO_SIZE);
-
-            self.write_bytes_saturating(MESSAGE);
-            let mut buffer = [0_u8; MESSAGE.len()];
-            self.read_bytes_saturating(&mut buffer);
-
-            &buffer == MESSAGE
-        };
-
-        // Disable loopback.
-        unsafe {
-            let mut modem_ctrl = inb(self.base() + reg::MODEM_CTRL);
-            // set the loop bit -> data never leaves the cip
-            modem_ctrl &= !(1 << 4);
-            outb(self.base() + reg::MODEM_CTRL, modem_ctrl);
-        }
-
-        self.set_interrupts(true);
-
-        if matches { Ok(()) } else { Err(LoopbackFailed) }
-    }
-
-    /// Reads the current [`LineStatusFlags`].
-    #[must_use]
-    #[inline]
-    pub fn line_status_flags(&mut self) -> LineStatusFlags {
-        let raw = unsafe { inb(self.base() + reg::LINE_STS) };
-        LineStatusFlags::from_bits_truncate(raw)
-    }
-
-    // #########################################################################
-    // public I/O
-
-    /// Try to read a single byte, if the underlying FIFO has data.
-    ///
-    /// Otherwise, an error is returned.
-    #[inline]
-    pub fn try_read_byte(&mut self) -> Result<u8, WouldBlock> {
-        if self
-            .line_status_flags()
-            .contains(LineStatusFlags::DATA_READY)
-        {
-            let byte = unsafe { inb(self.base() + reg::DATA) };
-            Ok(byte)
-        } else {
-            Err(WouldBlock)
-        }
-    }
-
-    /// Blocking variant of [`Self::try_read_byte`].
-    ///
-    /// ## Terminal / VT-102 Handling
-    ///
-    /// This type does not take care of any VT102-like terminal emulation. You
-    /// need to handle terminal-friendly newlines, backspace support, etc. on
-    /// your own.
-    #[must_use]
-    #[inline]
-    pub fn read_byte(&mut self) -> u8 {
-        loop {
-            if let Ok(byte) = self.try_read_byte() {
-                return byte;
-            }
-            hint::spin_loop()
-        }
-    }
-
-    /// Reads bytes as long as there is data available and returns the number
-    /// of read bytes.
-    ///
-    /// ## Terminal / VT-102 Handling
-    ///
-    /// This type does not take care of any VT102-like terminal emulation. You
-    /// need to handle terminal-friendly newlines, backspace support, etc. on
-    /// your own.
-    #[must_use]
-    pub fn read_bytes(&mut self, buffer: &mut [u8]) -> usize {
-        for (i, cell) in buffer.iter_mut().enumerate() {
-            match self.try_read_byte() {
-                Ok(byte) => *cell = byte,
-                Err(_) => return i,
-            }
-        }
-
-        buffer.len()
-    }
-
-    /// Reads bytes as long as it takes to fill the buffer without exiting
-    /// early.
-    ///
-    /// ## Terminal / VT-102 Handling
-    ///
-    /// This type does not take care of any VT102-like terminal emulation. You
-    /// need to handle terminal-friendly newlines, backspace support, etc. on
-    /// your own.
-    #[inline]
-    pub fn read_bytes_saturating(&mut self, buffer: &mut [u8]) {
-        let mut i = 0;
-        while i < buffer.len() {
-            match self.try_read_byte() {
-                Ok(byte) => {
-                    buffer[i] = byte;
-                    i += 1;
+            // First: check a single byte
+            {
+                self.try_send_byte(TEST_BYTE)
+                    .map_err(|_| LoopbackFailedError)?;
+                let read = self.try_receive_byte().map_err(|_| LoopbackFailedError)?;
+                if read != TEST_BYTE {
+                    return Err(LoopbackFailedError);
                 }
-                Err(_) => continue,
             }
-            hint::spin_loop()
-        }
-    }
 
-    /// Try to write a single byte, if the underlying FIFO has capacity.
-    ///
-    /// Otherwise, an error is returned.
-    ///
-    /// ## Terminal / VT-102 Handling
-    ///
-    /// This type does not take care of any VT102-like terminal emulation. You
-    /// need to handle terminal-friendly newlines, backspace support, etc. on
-    /// your own.
-    #[inline]
-    pub fn try_write_byte(&mut self, byte: u8) -> Result<(), WouldBlock> {
-        if self
-            .line_status_flags()
-            .contains(LineStatusFlags::TRANSMITTER_READY_FOR_DATA)
-        {
-            unsafe { outb(self.base() + reg::DATA, byte) };
-            Ok(())
-        } else {
-            Err(WouldBlock)
-        }
-    }
+            // Now check a message
+            {
+                let n = self.send_bytes(TEST_MESSAGE.as_bytes());
+                if n != TEST_MESSAGE.len() {
+                    return Err(LoopbackFailedError);
+                }
 
-    /// Blocking variant of [`Self::try_write_byte`].
-    ///
-    /// ## Terminal / VT-102 Handling
-    ///
-    /// This type does not take care of any VT102-like terminal emulation. You
-    /// need to handle terminal-friendly newlines, backspace support, etc. on
-    /// your own.
-    #[inline]
-    pub fn write_byte(&mut self, byte: u8) {
-        loop {
-            if self.try_write_byte(byte).is_ok() {
-                break;
+                let mut read_buffer = [0_u8; TEST_MESSAGE.len()];
+                let n = self.receive_bytes(&mut read_buffer);
+                if n != TEST_MESSAGE.len() {
+                    return Err(LoopbackFailedError);
+                }
+                let string = from_utf8(&read_buffer)
+                    .map_err(|_| LoopbackFailedError)?;
+
+                if string != TEST_MESSAGE {
+                    return Err(LoopbackFailedError);
+                }
             }
-            hint::spin_loop()
-        }
-    }
 
-    /// Writes all bytes into the device and only returns if all data was
-    /// transmitted.
-    ///
-    /// ## Terminal / VT-102 Handling
-    ///
-    /// This type does not take care of any VT102-like terminal emulation. You
-    /// need to handle terminal-friendly newlines, backspace support, etc. on
-    /// your own.
-    #[inline]
-    pub fn write_bytes_saturating(&mut self, buffer: &[u8]) {
-        for byte in buffer {
-            self.write_byte(*byte);
+            // restore MCR
+            self.backend.write(offsets::MCR as u8, old_mcr.bits());
         }
-    }
-}
 
-impl fmt::Write for Uart16550Port {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.write_bytes_saturating(s.as_bytes());
         Ok(())
     }
-}
 
-/// Register offsets regarding the base.
-#[allow(missing_docs)]
-pub mod reg {
-    pub const DATA: u16 = 0;
-    pub const INTERRUPT_ENABLE: u16 = 1;
-    pub const FIFO_CTRL: u16 = 2;
-    pub const LINE_CTRL: u16 = 3;
-    pub const MODEM_CTRL: u16 = 4;
-    pub const LINE_STS: u16 = 5;
-
-    /// Also called Divisor Latch Low Byte (DLL).
-    pub const BAUD_LOW: u16 = 0;
-    /// Also called Divisor Latch High Byte (DLH).
-    pub const BAUD_HIGH: u16 = 1;
-}
-
-/// The operation would block.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LoopbackFailed;
-
-impl Display for LoopbackFailed {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        write!(f, "the loopback test failed and the device might be broken")
-    }
-}
-
-impl Error for LoopbackFailed {}
-
-/// The operation would block.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WouldBlock;
-
-impl Display for WouldBlock {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        write!(f, "the operation would block")
-    }
-}
-
-impl Error for WouldBlock {}
-
-/// The value was invalid in that context.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct InvalidValue<T>(pub T);
-
-impl<T: Debug> Display for InvalidValue<T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        write!(f, "the value was invalid: {:?}", self.0)
-    }
-}
-
-impl<T: Debug> Error for InvalidValue<T> {}
-
-/// The speed of data transmission, measured in symbols per second (or bits, in
-/// the case of simple UARTs).
-///
-/// The low-level representation can be created via [`BaudRate::raw`].
-/// Variants can be constructed either directly or from integers by using
-/// [`BaudRate::try_from_raw`] and [`BaudRate::try_from_value`].
-#[allow(missing_docs)]
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Hash)]
-pub enum BaudRate {
-    #[default]
-    Baud115200,
-    Baud57600,
-    Baud38400,
-    Baud9600,
-    Baud1200,
-    Custom(u16),
-}
-
-impl BaudRate {
-    /// Returns the raw low-level representation.
-    #[must_use]
-    pub const fn raw(self) -> u16 /* divisor */ {
-        match self {
-            Self::Baud115200 => 1,
-            Self::Baud57600 => 2,
-            Self::Baud38400 => 3,
-            Self::Baud9600 => 12,
-            Self::Baud1200 => 96,
-            Self::Custom(baud_rate) => {
-                let divisor = FREQUENCY / (16 * baud_rate as u32);
-                divisor as u16
-            }
-        }
-    }
-
-    /// Try to create the value from the raw low-level representation.
+    /// Performs some checks to see if the UART is connected to a physical
+    /// device.
     ///
-    /// In this case, this means from the divisor.
-    pub const fn try_from_raw(raw: u8 /* divisor */) -> Result<Self, InvalidValue<u8>> {
-        match raw {
-            1 => Ok(Self::Baud115200),
-            2 => Ok(Self::Baud57600),
-            3 => Ok(Self::Baud38400),
-            12 => Ok(Self::Baud9600),
-            96 => Ok(Self::Baud1200),
-            divisor => {
-                let baud_rate = FREQUENCY / (16 * divisor as u32);
-                let remainder = FREQUENCY % (16 * divisor as u32);
-                if remainder != 0 {
-                    Err(InvalidValue(divisor))
-                } else {
-                    Ok(Self::Custom(baud_rate as u16))
+    /// Once this check succeeds, one can see the connection as established.
+    /// A [`InterruptType::ModemStatus`] may indicate that this check needs to
+    /// be performed again.
+    pub fn check_remote_ready_to_receive(&mut self) -> Result<(), RemoteReadyToReceiveError> {
+        // SAFETY: We operate on valid register addresses.
+        let msr = unsafe { self.backend.read(offsets::MSR as u8) };
+        // SAFETY: All possible bits are typed.
+        let msr = unsafe { MSR::from_bits(msr).unwrap_unchecked() };
+        if !msr.contains(MSR::DSR) {
+            return Err(RemoteReadyToReceiveError::NoRemoteConnected);
+        }
+        if !msr.contains(MSR::CD) {
+            return Err(RemoteReadyToReceiveError::RemoteNotConfigured);
+        }
+        if !msr.contains(MSR::CTS) {
+            return Err(RemoteReadyToReceiveError::RemoteNotClearToSend);
+        }
+        Ok(())
+    }
+
+    /* ----- User I/O ------------------------------------------------------- */
+
+    /// Tries to read a raw byte from the device.
+    ///
+    /// This will receive whatever a remote has sent to us.
+    pub fn try_receive_byte(&mut self) -> Result<u8, ByteReceiveError> {
+        let lsr = self.lsr();
+
+        if !lsr.contains(LSR::DATA_READY) {
+            return Err(ByteReceiveError);
+        }
+
+        // SAFETY: We operate on valid register addresses.
+        let byte = unsafe { self.backend.read(offsets::DATA as u8) };
+
+        Ok(byte)
+    }
+
+    /// Tries to write a raw byte to the device.
+    ///
+    /// This will be transmitted to the remote.
+    pub fn try_send_byte(&mut self, byte: u8) -> Result<(), ByteSendError> {
+        let lsr = self.lsr();
+        let msr = self.msr();
+
+        if !lsr.contains(LSR::THR_EMPTY) {
+            return Err(ByteSendError::NoCapacity);
+        }
+
+        if !msr.contains(MSR::CTS) {
+            return Err(ByteSendError::RemoteNotClearToSend);
+        }
+
+        // SAFETY: We operate on valid register addresses.
+        unsafe {
+            self.backend.write(offsets::DATA as u8, byte);
+        }
+
+        Ok(())
+    }
+
+    /// Tries to receive bytes from the device and writes them into the provided
+    /// buffer.
+    ///
+    /// This function returns the number of bytes that have been received and
+    /// put into the buffer.
+    pub fn receive_bytes(&mut self, buffer: &mut [u8]) -> usize {
+        buffer
+            .iter_mut()
+            .map_while(|slot: &mut u8| {
+                self.try_receive_byte().ok().map(|byte| {
+                    *slot = byte;
+                })
+            })
+            .count()
+    }
+
+    /// Tries to send bytes from the device to the remote.
+    ///
+    /// This function returns the number of bytes that have been sent to the
+    /// remote.
+    pub fn send_bytes(&mut self, buffer: &[u8]) -> usize {
+        buffer
+            .iter()
+            .map_while(|byte: &u8| self.try_send_byte(*byte).ok())
+            .count()
+    }
+
+    /// Similar to [`Self::receive_bytes`] but blocks until enough bytes were
+    /// read to fully fill the buffer.
+    pub fn receive_bytes_all(&mut self, buffer: &mut [u8]) {
+        for slot in buffer {
+            // Loop until we can fill the slot.
+            loop {
+                if let Ok(byte) = self.try_receive_byte() {
+                    *slot = byte;
+                    break;
                 }
             }
         }
     }
 
-    /// Try to create the value from an integer representation.
-    ///
-    /// The value must result in a clear divisor without any remainder!
-    pub const fn try_from_value(value: u32) -> Result<Self, InvalidValue<u32>> {
-        match value {
-            115200 => Ok(Self::Baud115200),
-            57600 => Ok(Self::Baud57600),
-            38400 => Ok(Self::Baud38400),
-            9600 => Ok(Self::Baud9600),
-            1200 => Ok(Self::Baud1200),
-            baud_rate => {
-                let _divisor = (FREQUENCY / (16 * baud_rate)) as u16;
-                let remainder = FREQUENCY % (16 * baud_rate);
-                if remainder != 0 {
-                    Err(InvalidValue(baud_rate))
-                } else {
-                    Ok(Self::Custom(baud_rate as u16))
+    /// Similar to [`Self::send_bytes`] but blocks until all bytes were
+    /// written entirely to the remote.
+    pub fn send_bytes_all(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            // Loop until we can send the byte.
+            loop {
+                if  self.try_send_byte(*byte).is_ok() {
+                    break;
                 }
             }
         }
     }
-}
 
-/// The number of bits in each transmitted character on the wire that carry
-/// actual payload information.
-///
-/// The low-level representation can be created via [`DataBits::raw`].
-/// Variants can be constructed either directly or from integers by using
-/// [`DataBits::try_from_raw`] and [`DataBits::try_from_value`].
-#[allow(missing_docs)]
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Hash)]
-pub enum DataBits {
-    Bits5,
-    Bits6,
-    Bits7,
-    #[default]
-    Bits8,
-}
+    /* ----- Typed Register Getters ----------------------------------------- */
 
-impl DataBits {
-    /// Returns the raw low-level representation.
-    #[must_use]
-    pub const fn raw(self) -> u8 {
-        match self {
-            Self::Bits5 => 0b00,
-            Self::Bits6 => 0b01,
-            Self::Bits7 => 0b10,
-            Self::Bits8 => 0b11,
-        }
+    /// Fetches the current value from the [`IER`].
+    pub fn ier(&mut self) -> IER {
+        // SAFETY: We operate on valid register addresses.
+        let val = unsafe { self.backend.read(offsets::IER as u8) };
+        // SAFETY: All possible bits are typed.
+        unsafe { IER::from_bits(val).unwrap_unchecked() }
     }
 
-    /// Try to create the value from the raw low-level representation.
-    pub const fn try_from_raw(raw: u8) -> Result<Self, InvalidValue<u8>> {
-        match raw {
-            0b00 => Ok(Self::Bits5),
-            0b01 => Ok(Self::Bits6),
-            0b10 => Ok(Self::Bits7),
-            0b11 => Ok(Self::Bits8),
-            val => Err(InvalidValue(val)),
-        }
+    /// Fetches the current value from the [`ISR`].
+    pub fn isr(&mut self) -> ISR {
+        // SAFETY: We operate on valid register addresses.
+        let val = unsafe { self.backend.read(offsets::ISR as u8) };
+        // SAFETY: All possible bits are typed.
+        unsafe { ISR::from_bits(val).unwrap_unchecked() }
     }
 
-    /// Try to create the value from an integer representation.
-    pub const fn try_from_value(value: u32) -> Result<Self, InvalidValue<u32>> {
-        match value {
-            5 => Ok(Self::Bits5),
-            6 => Ok(Self::Bits6),
-            7 => Ok(Self::Bits7),
-            8 => Ok(Self::Bits8),
-            val => Err(InvalidValue(val)),
-        }
-    }
-}
-
-/// Extra bits sent after each character on the wire to signal the end of
-/// transmission and allow the receiver to resynchronize.
-///
-/// The low-level representation can be created via [`StopBits::raw`].
-/// Variants can be constructed either directly or from integers by using
-/// [`StopBits::try_from_raw`] and [`StopBits::try_from_value`].
-#[allow(missing_docs)]
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Hash)]
-pub enum StopBits {
-    #[default]
-    One,
-    Two,
-}
-
-impl StopBits {
-    /// Returns the raw low-level representation.
-    #[must_use]
-    pub const fn raw(self) -> u8 {
-        match self {
-            Self::One => 0,
-            Self::Two => 1,
-        }
+    /// Fetches the current value from the [`FCR`].
+    pub fn fcr(&mut self) -> FCR {
+        // SAFETY: We operate on valid register addresses.
+        let val = unsafe { self.backend.read(offsets::FCR as u8) };
+        // SAFETY: All possible bits are typed.
+        unsafe { FCR::from_bits(val).unwrap_unchecked() }
     }
 
-    /// Try to create the value from the raw low-level representation.
-    pub const fn try_from_raw(raw: u8) -> Result<Self, InvalidValue<u8>> {
-        match raw {
-            0 => Ok(Self::One),
-            1 => Ok(Self::Two),
-            val => Err(InvalidValue(val)),
-        }
+    /// Fetches the current value from the [`LCR`].
+    pub fn lcr(&mut self) -> LCR {
+        // SAFETY: We operate on valid register addresses.
+        let val = unsafe { self.backend.read(offsets::LCR as u8) };
+        // SAFETY: All possible bits are typed.
+        unsafe { LCR::from_bits(val).unwrap_unchecked() }
     }
 
-    /// Try to create the value from an integer representation.
-    pub const fn try_from_value(value: u32) -> Result<Self, InvalidValue<u32>> {
-        match value {
-            1 => Ok(Self::One),
-            2 => Ok(Self::Two),
-            val => Err(InvalidValue(val)),
-        }
+    /// Fetches the current value from the [`MCR`].
+    pub fn mcr(&mut self) -> MCR {
+        // SAFETY: We operate on valid register addresses.
+        let val = unsafe { self.backend.read(offsets::MCR as u8) };
+        // SAFETY: All possible bits are typed.
+        unsafe { MCR::from_bits(val).unwrap_unchecked() }
+    }
+
+    /// Fetches the current value from the [`LSR`].
+    pub fn lsr(&mut self) -> LSR {
+        // SAFETY: We operate on valid register addresses.
+        let val = unsafe { self.backend.read(offsets::LSR as u8) };
+        // SAFETY: All possible bits are typed.
+        unsafe { LSR::from_bits(val).unwrap_unchecked() }
+    }
+
+    /// Fetches the current value from the [`MSR`].
+    pub fn msr(&mut self) -> MSR {
+        // SAFETY: We operate on valid register addresses.
+        let val = unsafe { self.backend.read(offsets::MSR as u8) };
+        // SAFETY: All possible bits are typed.
+        unsafe { MSR::from_bits(val).unwrap_unchecked() }
     }
 }
-
-/// The configuration for a [`Uart16550Port`].
-///
-/// The default configuration uses a `8-N-1` transmission
-/// (<https://en.wikipedia.org/wiki/8-N-1>) with a baud rate of 115200
-/// ([`SerialConfig::default`]).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct SerialConfig {
-    /// Divisor for the baud rate.
-    pub baud_rate: BaudRate,
-    /// Amount of data bits.
-    pub data_bits: DataBits,
-    /// Amount of stop bits.
-    pub stop_bits: StopBits,
-}
-
-impl SerialConfig {
-    pub const EIGHT_N_1_115200: Self = Self {
-        baud_rate: BaudRate::Baud115200,
-    }
-}
-
-bitflags! {
-    /// Line status flags.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    #[repr(transparent)]
-    pub struct LineStatusFlags: u8 {
-        /// At least one byte is ready to be read.
-        const DATA_READY = 1 << 0;
-        /// Receiver overrun: a byte was lost because it wasn’t read in time.
-        const DATA_OVERRUN_ERROR = 1 << 1;
-        /// Parity of received byte does not match the configured parity.
-        const PARITY_ERROR = 1 << 2;
-        /// Framing error: stop bit not detected correctly.
-        const FRAMIG_ERROR = 1 << 3;
-        /// Break condition detected (line held low too long).
-        const BREAK_INDICATOR = 1 << 4;
-        /// Can accept more bytes to be written.
-        const TRANSMITTER_READY_FOR_DATA = 1 << 5;
-        /// Transmitter completely empty (all bytes sent).
-        const TRANSMITTER_EMPTY = 1 << 6;
-        /// One or more errors present in the FIFO.
-        const ONE_ERROR_IN_FIFO = 1 << 7;
-    }
-}
-
-#[cfg(test)]
-mod conversion_tests {
-    use super::*;
-
-    #[test]
-    #[rustfmt::skip]
-    fn baud_rate() {
-        assert_eq!(BaudRate::try_from_raw(1), Ok(BaudRate::Baud115200));
-        assert_eq!(BaudRate::try_from_raw(2), Ok(BaudRate::Baud57600));
-        assert_eq!(BaudRate::try_from_raw(3), Ok(BaudRate::Baud38400));
-        assert_eq!(BaudRate::try_from_raw(12), Ok(BaudRate::Baud9600));
-        assert_eq!(BaudRate::try_from_raw(24), Ok(BaudRate::Custom(4800)));
-        assert_eq!(BaudRate::try_from_raw(96), Ok(BaudRate::Baud1200));
-        assert_eq!(BaudRate::try_from_raw(137), Err(InvalidValue(137)));
-
-        assert_eq!(BaudRate::try_from_value(115200), Ok( BaudRate::Baud115200));
-        assert_eq!(BaudRate::try_from_value(57600), Ok(BaudRate::Baud57600));
-        assert_eq!(BaudRate::try_from_value(38400), Ok(BaudRate::Baud38400));
-        assert_eq!(BaudRate::try_from_value(9600), Ok(BaudRate::Baud9600));
-        assert_eq!(BaudRate::try_from_value(4800), Ok(BaudRate::Custom(4800)));
-        assert_eq!(BaudRate::try_from_value(1200), Ok(BaudRate::Baud1200));
-        assert_eq!(BaudRate::try_from_value(137), Err(InvalidValue(137)));
-    }
-
-    #[test]
-    fn stop_bits() {
-        assert_eq!(StopBits::try_from_raw(0), Ok(StopBits::One));
-        assert_eq!(StopBits::try_from_raw(1), Ok(StopBits::Two));
-        assert_eq!(StopBits::try_from_raw(2), Err(InvalidValue(2)));
-
-        assert_eq!(StopBits::try_from_value(0), Err(InvalidValue(0)));
-        assert_eq!(StopBits::try_from_value(1), Ok(StopBits::One));
-        assert_eq!(StopBits::try_from_value(2), Ok(StopBits::Two));
-        assert_eq!(StopBits::try_from_value(3), Err(InvalidValue(3)));
-    }
-
-    #[test]
-    fn data_bits() {
-        assert_eq!(DataBits::try_from_raw(0), Ok(DataBits::Bits5));
-        assert_eq!(DataBits::try_from_raw(1), Ok(DataBits::Bits6));
-        assert_eq!(DataBits::try_from_raw(2), Ok(DataBits::Bits7));
-        assert_eq!(DataBits::try_from_raw(3), Ok(DataBits::Bits8));
-        assert_eq!(DataBits::try_from_raw(4), Err(InvalidValue(4)));
-
-        assert_eq!(DataBits::try_from_value(4), Err(InvalidValue(4)));
-        assert_eq!(DataBits::try_from_value(5), Ok(DataBits::Bits5));
-        assert_eq!(DataBits::try_from_value(6), Ok(DataBits::Bits6));
-        assert_eq!(DataBits::try_from_value(7), Ok(DataBits::Bits7));
-        assert_eq!(DataBits::try_from_value(8), Ok(DataBits::Bits8));
-        assert_eq!(DataBits::try_from_value(9), Err(InvalidValue(9)));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_config() {
-        let config_from_enum_variants = SerialConfig {
-            baud_rate: BaudRate::Baud115200,
-            data_bits: DataBits::Bits8,
-            stop_bits: StopBits::One,
-        };
-        let config_from_integers = SerialConfig {
-            baud_rate: BaudRate::try_from_value(115200).unwrap(),
-            data_bits: DataBits::try_from_value(8).unwrap(),
-            stop_bits: StopBits::try_from_value(1).unwrap(),
-        };
-        let config_from_raw_values = SerialConfig {
-            baud_rate: BaudRate::try_from_raw(1).unwrap(),
-            data_bits: DataBits::try_from_raw(0b11).unwrap(),
-            stop_bits: StopBits::try_from_raw(0).unwrap(),
-        };
-
-        assert_eq!(config_from_enum_variants, SerialConfig::default());
-        assert_eq!(config_from_integers, config_from_integers);
-        assert_eq!(config_from_integers, config_from_raw_values);
-    }
-}
-*/

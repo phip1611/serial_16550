@@ -18,7 +18,6 @@ pub const CLK_FREQUENCY_HZ: u32 = 1_843_200;
 pub const FIFO_SIZE: usize = 16;
 
 mod errors {
-    use super::*;
     use core::error::Error;
     use core::fmt::{self, Display, Formatter};
 
@@ -62,7 +61,7 @@ mod errors {
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
             write!(
                 f,
-                "Input values do not result in even (integer representable) baud rate! frequency={}, baud_rate={}, prescaler_division_factor={:?}",
+                "input values do not result in even (integer representable) baud rate! frequency={}, baud_rate={}, prescaler_division_factor={:?}",
                 self.frequency, self.baud_rate, self.prescaler_division_factor,
             )
         }
@@ -93,7 +92,7 @@ pub fn calc_baud_rate(
     let b = 16 * (psd + 1) * divisor;
 
     if a % b == 0 {
-        Ok((a / b))
+        Ok(a / b)
     } else {
         Err(NonIntegerBaudRateError {
             frequency,
@@ -134,7 +133,6 @@ pub fn calc_divisor(
         // Unlikely but better be safe with an explicit panic.
         .map(|val| u16::try_from(val).unwrap())
 }
-
 
 /// Exposes low-level information about the on-chip register layout and provides
 /// types that model individual registers.
@@ -183,9 +181,13 @@ pub mod registers {
         /* Registers accessible only when DLAB = 1 */
 
         /// Divisor Latch, Least significant byte (DLL).
+        ///
+        /// This is the low byte of the 16 bit divisor.
         pub const DLL: usize = 0;
 
         /// Divisor Latch, Most significant byte (DLL).
+        ///
+        /// This is the high byte of the 16 bit divisor.
         pub const DLM: usize = 1;
 
         /// Prescaler Division.
@@ -195,11 +197,11 @@ pub mod registers {
         pub const PSD: usize = 6;
     }
 
-    /// Bits of the data register (RHR / THR).
+    /// Typing of the data register (RHR / THR).
     pub type DATA = u8;
 
     bitflags! {
-        /// Bits of the Interrupt Enable Register (IER).
+        /// Typing of the Interrupt Enable Register (IER).
         ///
         /// This register individually enables each of the possible interrupt
         /// sources. A logic "1" in any of these bits enables the corresponding
@@ -236,7 +238,7 @@ pub mod registers {
     }
 
     bitflags! {
-        /// Bits of the Interrupt Status Register (ISR).
+        /// Typing of the Interrupt Status Register (ISR).
         ///
         /// The main purpose of this register is to identify the interrupt with
         /// the highest priority that is currently pending.
@@ -262,7 +264,7 @@ pub mod registers {
             /// signals the end of a complete DMA transfer for transmitted data.
             /// This is a non-standard flag that is enabled only if DMA End
             /// signaling has been enabled with bit 4 of FCR register. Otherwise
-            /// it will always be read as ‘0'.
+            /// it will always be read as '0'.
             const DMA_TX_END = 1 << 5;
             /// Set if FIFOs are implemented and enabled (by setting FCR bit 0).
             ///
@@ -402,13 +404,13 @@ pub mod registers {
     }
 
     bitflags! {
-        /// Bits of the FIFO Control Register (FCR).
+        /// Typing of the FIFO Control Register (FCR).
         ///
         /// Write-only register used to enable or disable FIFOs, clear
         /// receive/transmit FIFOs, and set the receive trigger level.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
         pub struct FCR: u8 {
-            /// When set (‘1') this bits enables both the transmitter and
+            /// When set ('1') this bits enables both the transmitter and
             /// receiver FIFOs.
             ///
             /// In any writing to FCR, this bit must be set in order to affect
@@ -458,7 +460,7 @@ pub mod registers {
         }
     }
 
-    impl LCR {
+    impl FCR {
         /// Returns the trigger level of the FIFO.
         pub const fn fifo_trigger_level(self) -> FifoTriggerLevel {
             let bits = (self.bits() >> 6) & 0b11;
@@ -486,7 +488,7 @@ pub mod registers {
     /// This type is a convenient and non-ABI compatible abstraction. ABI
     /// compatibility is given via [`FifoTriggerLevel::from_raw_bits`] and
     /// [`FifoTriggerLevel::to_raw_bits`].
-    #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Hash)]
+    #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub enum FifoTriggerLevel {
         /// Interrupt is created after every character.
         One,
@@ -533,7 +535,7 @@ pub mod registers {
     }
 
     bitflags! {
-        /// Bits of the Line Control Register (LCR).
+        /// Typing of the Line Control Register (LCR).
         ///
         /// Configures the serial frame format including word length, stop bits,
         /// parity, and controls access to the divisor latches via DLAB.
@@ -670,6 +672,7 @@ pub mod registers {
         ///
         /// This function operates on the value as-is and does not perform any
         /// shifting bits.
+        #[must_use]
         pub const fn from_raw_bits(bits: u8) -> Self {
             let bits = bits & 0b111;
             let disabled = (bits & 1) == 0;
@@ -703,14 +706,14 @@ pub mod registers {
     }
 
     bitflags! {
-        /// Bits of the Modem Control Register (MCR).
+        /// Typing of the Modem Control Register (MCR).
         ///
         /// Controls modem interface output signal.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
         pub struct MCR: u8 {
             /// Controls the "data terminal ready" active low output (dtr_n).
             ///
-            /// Signals that the local UART device is powered on and ready.
+            /// Signals the remote that the local UART device is powered on.
             ///
             /// A 1 in this bit makes dtr_n output a 0. When the bit is cleared,
             /// dtr_n outputs a 1.
@@ -718,7 +721,7 @@ pub mod registers {
             /// Controls the "request to send" active low output (rts_n) in the
             /// same way as bit 0 controls dtr_n.
             ///
-            /// Signals that the local UART is ready to receive data.
+            /// Signals the remote that the local UART is ready to receive data.
             const RTS = 1 << 1;
             /// Controls the general purpose, active low, output out1_n in the
             /// same way as bit 0 controls dtr_n.
@@ -748,7 +751,7 @@ pub mod registers {
     }
 
     bitflags! {
-        /// Bits of the Line Status Register (MCR).
+        /// Typing of the Line Status Register (MCR).
         ///
         /// Reports the current status of the transmitter and receiver,
         ///  including data readiness, errors, and transmitter emptiness.
@@ -827,7 +830,7 @@ pub mod registers {
     }
 
     bitflags! {
-        /// Bits of the Modem Status Register (MSR).
+        /// Typing of the Modem Status Register (MSR).
         ///
         /// Reflects the current state and change status of modem input.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -866,18 +869,18 @@ pub mod registers {
         }
     }
 
-    /// Bits of the Scratch Pad Register (SPR).
+    /// Typing of the Scratch Pad Register (SPR).
     ///
     /// General-purpose read/write register with no defined hardware function,
     /// intended for software use or probing UART presence.
     pub type SPR = u8;
 
-    /// Bits of the divisor latch register (low byte).
+    /// Typing of the divisor latch register (low byte).
     ///
     /// Used to control the effective baud rate (see [`super::calc_baud_rate`]).
     pub type DLL = u8;
 
-    /// Bits of the divisor latch register (high byte).
+    /// Typing of the divisor latch register (high byte).
     ///
     /// Used to control the effective baud rate (see [`super::calc_baud_rate`]).
     pub type DLM = u8;
@@ -980,7 +983,7 @@ pub mod registers {
     }
 
     bitflags! {
-        /// Bits of the Prescaler Division (PSD) register.
+        /// Typing of the Prescaler Division (PSD) register.
         ///
         /// This is a non-standard register (i.e., it is not present in the
         /// industry standard 16550 UART). Its purpose is to provide a second
@@ -1061,13 +1064,13 @@ mod tests {
     #[test]
     fn test_calc_divisor() {
         assert_eq!(calc_divisor(CLK_FREQUENCY_HZ, 115200, None), Ok(1));
-        assert_eq!(calc_divisor(CLK_FREQUENCY_HZ, 57600, None, ), Ok(2));
-        assert_eq!(calc_divisor(CLK_FREQUENCY_HZ, 38400, None, ), Ok(3));
-        assert_eq!(calc_divisor(CLK_FREQUENCY_HZ, 19200, None, ), Ok(6));
-        assert_eq!(calc_divisor(CLK_FREQUENCY_HZ, 12800, None, ), Ok(9));
-        assert_eq!(calc_divisor(CLK_FREQUENCY_HZ, 9600, None, ), Ok(12));
-        assert_eq!(calc_divisor(CLK_FREQUENCY_HZ, 7680, None, ), Ok(15));
-        assert_eq!(calc_divisor(CLK_FREQUENCY_HZ, 7200, None, ), Ok(16));
+        assert_eq!(calc_divisor(CLK_FREQUENCY_HZ, 57600, None,), Ok(2));
+        assert_eq!(calc_divisor(CLK_FREQUENCY_HZ, 38400, None,), Ok(3));
+        assert_eq!(calc_divisor(CLK_FREQUENCY_HZ, 19200, None,), Ok(6));
+        assert_eq!(calc_divisor(CLK_FREQUENCY_HZ, 12800, None,), Ok(9));
+        assert_eq!(calc_divisor(CLK_FREQUENCY_HZ, 9600, None,), Ok(12));
+        assert_eq!(calc_divisor(CLK_FREQUENCY_HZ, 7680, None,), Ok(15));
+        assert_eq!(calc_divisor(CLK_FREQUENCY_HZ, 7200, None,), Ok(16));
         assert_eq!(
             calc_divisor(CLK_FREQUENCY_HZ, 7211, None),
             Err(NonIntegerDivisorError {
