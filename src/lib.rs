@@ -32,7 +32,9 @@
     clippy::all,
     clippy::cargo,
     clippy::nursery,
-    clippy::must_use_candidate
+    clippy::must_use_candidate,
+    clippy::missing_safety_doc,
+    clippy::undocumented_unsafe_blocks
 )]
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
@@ -40,6 +42,149 @@
 // I can't do much about that.
 #![allow(clippy::multiple_crate_versions)]
 
+#[cfg(test)]
+extern crate std;
+
+use core::marker::PhantomData;
+use core::error::Error;
+use core::fmt::Display;
+use crate::backend::{Backend, MmioAddress, MmioBackend, PioBackend, PortIoAddress, RegisterAddress};
+use crate::config::Config;
+use crate::spec::{calc_divisor, registers};
+use crate::spec::registers::{offsets, Parity, WordLength, DATA, IER, LCR};
+
+pub mod spec;
+mod backend;
+mod config;
+
+
+/// The specified address is invalid because it is either null or doesn't offer
+/// [`registers::offsets::MAX`] subsequent addresses.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct InvalidAddressError<A: RegisterAddress>(A);
+
+impl<A: RegisterAddress> Display for InvalidAddressError<A> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "invalid register address: {:x?}", self.0)
+    }
+}
+
+/// Errors that can happen when a [`Uart16550`] initialized in
+/// [`Uart16550::init`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum InitError {
+    /// The device could not be detected.
+    DeviceNotPresent,
+    /// The loopback self-test after initialization failed.
+    LoopbackTestFailed,
+}
+
+impl Display for InitError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            InitError::DeviceNotPresent => {
+                write!(f, "the device could not be detected")
+            }
+            InitError::LoopbackTestFailed => {
+                write!(f, "the loopback self-test after initialization failed")
+            }
+        }
+    }
+}
+
+impl Error for InitError {}
+
+
+/// Abstraction over a [16550 UART device][uart].
+///
+/// All reads and writes from/to that device operate on the hardware.
+///
+/// [uart]: https://en.wikipedia.org/wiki/16550_UART
+#[derive(Debug)]
+pub struct Uart16550<A: RegisterAddress, B: Backend<A>> {
+    backend: B,
+    // The currently active config.
+    config: Config,
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+impl Uart16550<PortIoAddress, PioBackend> {
+    /// Creates a new [`Uart16550`] backed by x86 port I/O.
+    ///
+    /// # Safety
+    ///
+    /// Callers must ensure that the address is valid and safe to use.
+    pub unsafe fn new_port(base_port: u16, config: Config) -> Result<Self, InvalidAddressError<PortIoAddress>> {
+        if base_port.checked_add(offsets::MAX as u16).is_none() {
+            return Err(InvalidAddressError(PortIoAddress(base_port)));
+        }
+
+        let backend = PioBackend(PortIoAddress(base_port));
+
+        Ok(Self {
+            backend,
+            config,
+        })
+    }
+}
+
+impl<B: Backend<MmioAddress>> Uart16550<MmioAddress, B> {
+    /// Creates a new [`Uart16550`] backed by MMIO.
+    ///
+    /// # Safety
+    ///
+    /// Callers must ensure that the address is valid and safe to use.
+    pub unsafe fn new_mmio(base_address: *mut u8, config: Config) -> Result<Self, InvalidAddressError<MmioAddress>> {
+        if base_address.is_null() {
+            return Err(InvalidAddressError(MmioAddress(base_address)));
+        }
+        if (base_address as usize).checked_add(offsets::MAX).is_none()
+        {
+            return Err(InvalidAddressError(MmioAddress(base_address)));
+        }
+
+        let backend = MmioBackend(MmioAddress(base_address));
+
+        Ok(Self {
+            backend,
+            config,
+        })
+
+    }
+}
+
+impl<A: RegisterAddress, B: Backend<A>> Uart16550<A, B> {
+    /// Initializes the devices according to the provided [`Config`] including a
+    /// few typical as well as opinionated settings so that afterwords, the
+    /// device can properly receive data and send data.
+    ///
+    /// It is recommended to call [`Self::test_loopback`] next to verify.
+    ///
+    ///
+    /// # Safety
+    ///
+    /// Callers must ensure that using this type with the underlying hardware
+    /// is done only in a context where such operations are valid and safe.
+    ///
+    /// Further, the serial config must match the expectations of the wire and
+    /// the other side. Otherwise, garbage will be received.
+    pub fn init(&mut self) -> Result<(), InitError> {
+        // SPR test: write something and try to read it again.
+        unsafe {
+            let write = 0x42;
+            self.backend.write_register(offsets::SPR as u8, write);
+            let read =self.backend.read_register(offsets::SPR as u8);
+
+            if read != write {
+                return Err(InitError::DeviceNotPresent)
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/*
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 compile_error!("port I/O is only available on x86 and x86_64");
 
@@ -809,3 +954,4 @@ mod tests {
         assert_eq!(config_from_integers, config_from_raw_values);
     }
 }
+*/
