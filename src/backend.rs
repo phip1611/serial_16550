@@ -85,6 +85,7 @@ pub trait Backend {
     unsafe fn read(&mut self, offset: u8) -> u8 {
         assert_offset(offset);
         let addr = self.base().add_offset(offset);
+        // SAFETY: The caller ensured that the register address is safe to use.
         unsafe { self._read_register(addr) }
     }
 
@@ -104,6 +105,7 @@ pub trait Backend {
     unsafe fn write(&mut self, offset: u8, value: u8) {
         assert_offset(offset);
         let addr = self.base().add_offset(offset);
+        // SAFETY: The caller ensured that the register address is safe to use.
         unsafe { self._write_register(addr, value) }
     }
 

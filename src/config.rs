@@ -40,18 +40,18 @@ impl BaudRate {
     #[must_use]
     pub const fn to_integer(self) -> u32 {
         match self {
-            BaudRate::Baud115200 => 115200,
-            BaudRate::Baud57600 => 57600,
-            BaudRate::Baud38400 => 38400,
-            BaudRate::Baud9600 => 9600,
-            BaudRate::Baud4800 => 4800,
-            BaudRate::Baud2400 => 2400,
-            BaudRate::Baud1200 => 1200,
-            BaudRate::Baud600 => 600,
-            BaudRate::Baud300 => 300,
-            BaudRate::Baud150 => 150,
-            BaudRate::Baud110 => 110,
-            BaudRate::Custom(val) => val,
+            Self::Baud115200 => 115200,
+            Self::Baud57600 => 57600,
+            Self::Baud38400 => 38400,
+            Self::Baud9600 => 9600,
+            Self::Baud4800 => 4800,
+            Self::Baud2400 => 2400,
+            Self::Baud1200 => 1200,
+            Self::Baud600 => 600,
+            Self::Baud300 => 300,
+            Self::Baud150 => 150,
+            Self::Baud110 => 110,
+            Self::Custom(val) => val,
         }
     }
 
@@ -90,10 +90,12 @@ impl Ord for BaudRate {
 ///
 /// Please note that sender and receiver **must agree** on the transmission
 /// settings, otherwise you receive garbage.
+///
+/// [`Uart16550`]: crate::Uart16550
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Config {
     // Device Config
-    /// Which interrupts to enable.
+    /// Interrupts to enable.
     pub interrupts: IER,
     /// The frequency which typically is [`CLK_FREQUENCY_HZ`].
     pub frequency: u32,
@@ -116,6 +118,8 @@ pub struct Config {
     /// Whether extra stop bits should be used.
     ///
     /// See [`LCR::MORE_STOP_BITS`] for more info.
+    ///
+    /// [`LCR::MORE_STOP_BITS`]: crate::spec::registers::LCR::MORE_STOP_BITS
     pub extra_stop_bits: bool,
     /// Whether parity bits should be used.
     pub parity: Parity,

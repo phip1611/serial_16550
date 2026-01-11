@@ -11,7 +11,9 @@ use core::fmt::Display;
 use crate::Uart16550;
 
 /// The specified address is invalid because it is either null or doesn't offer
-/// [`registers::offsets::MAX`] subsequent addresses.
+/// [`offsets::MAX`] subsequent addresses.
+///
+/// [`offsets::MAX`]: crate::spec::registers::offsets::MAX
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct InvalidAddressError<A: RegisterAddress>(pub(crate) A);
 
@@ -51,13 +53,13 @@ pub enum InitError {
 impl Display for InitError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            InitError::DeviceNotPresent => {
+            Self::DeviceNotPresent => {
                 write!(f, "the device could not be detected")
             }
-            InitError::LoopbackTestFailed => {
+            Self::LoopbackTestFailed => {
                 write!(f, "the loopback self-test after initialization failed")
             }
-            InitError::InvalidBaudRate(e) => {
+            Self::InvalidBaudRate(e) => {
                 write!(f, "invalid baud rate: {e}")
             }
         }
@@ -67,7 +69,7 @@ impl Display for InitError {
 impl Error for InitError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            InitError::InvalidBaudRate(err) => Some(err),
+            Self::InvalidBaudRate(err) => Some(err),
             _ => None,
         }
     }
@@ -118,14 +120,14 @@ pub enum RemoteReadyToReceiveError {
 impl Display for RemoteReadyToReceiveError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            RemoteReadyToReceiveError::NoRemoteConnected => {
+            Self::NoRemoteConnected => {
                 write!(f, "there is no remote connection")
             }
-            RemoteReadyToReceiveError::RemoteNotConfigured => write!(
+            Self::RemoteNotConfigured => write!(
                 f,
                 "remote is connected but did not signal it is ready to receive data"
             ),
-            RemoteReadyToReceiveError::RemoteNotClearToSend => {
+            Self::RemoteNotClearToSend => {
                 write!(f, "remote is not (yet) ready to receive more data")
             }
         }

@@ -3,30 +3,14 @@
 version = 4
 
 [[package]]
-name = "bit_ops"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc7ebbcda1ae3e0182285279c5df3a3e8a0280ecd5b9dab009fd1ebfa7c63503"
-dependencies = [
- "paste",
-]
-
-[[package]]
 name = "bitflags"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
 
 [[package]]
-name = "paste"
-version = "1.0.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
-
-[[package]]
 name = "uart16550_driver"
 version = "0.1.0"
 dependencies = [
- "bit_ops",
  "bitflags",
 ]

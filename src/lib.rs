@@ -1,31 +1,47 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! This crate provides a low-level driver for [16550 UART devices][uart], which
-//! operate as serial ports and are accessible via x86 I/O port addresses.
-//! These ports are commonly referred to as COM ports.
+//! # uart16550_driver
 //!
-//! For a few decades now, the COM port in x86 machines is almost always backed
-//! by a **16550 UART devices**, may it be physical or emulated. Serial ports are
-//! especially useful for debugging or operating system learning projects.
+//! Simple yet highly configurable low-level driver for
+//! [16550 UART devices][uart], typically known and used as serial ports or
+//! COM ports. Easy integration into Rust while providing fine-grained control
+//! where needed (e.g, for kernel drivers).
 //!
-//! [uart]: https://en.wikipedia.org/wiki/16550_UART
+//! The "serial device" or "COM port" in typical x86 machines is almost always
+//! backed by a **16550 UART devices**, may it be physical or emulated. This
+//! crate offers convenient and powerful abstractions for these devices, and
+//! also works for other architectures such as ARM or RISC-V.
+//!
+//! Serial ports are especially useful for debugging or operating system
+//! learning projects. See [`Uart16550`] to get started.
 //!
 //! ## Features
 //!
-//! - ✅ Reads and writes from/to the COM port
-//! - ✅ `no_std` support
-//! - ✅ Tested on **real hardware** and in virtual machines
-//! - ✅ High-level abstractions and also a seamless integration with plain integers
-//! - ⚠️ `x86` and `x86_64` only
+//! - ✅ Full transmit and receive support for UART 16550–compatible devices
+//! - ✅ `no_std`-compatible and allocation-free by design
+//! - ✅ Validated on **real hardware** as well as across different virtua
+//!   machines
+//! - ✅ Supports both x86 port-mapped I/O and memory-mapped I/O (MMIO)
+//! - ✅ High-level, ergonomic abstractions paired with support for plain integers
+//! - ✅ x86 port I/O but also MMIO support
+//! - ✅ Highly configurable to cover a wide range of setups
+//! - ✅ Fully type-safe and derived directly from the official
+//!   [specification][uart]
 //!
-//! ## Scope & Limitations
+//! ## Focus, Scope & Limitations
 //!
-//! Typically, a serial port is not only used for simple ASCII transfer but
-//! VT102-like terminal emulation. `uart16550_driver` only provides the low-level
-//! hardware interface to read and write bytes. Anything regarding terminal
-//! emulation, such as handling of backspace and newlines, is out of scope.
+//! While serial ports are often used in conjunction with VT102-like terminal
+//! emulation, the primary focus of `uart16550_driver` is strict specification
+//! compliance and convenient direct access to the underlying hardware for
+//! transmitting and receiving bytes, including all necessary device
+//! configuration.
 //!
-//! See [`Uart16550Port`].
+//! Terminal emulation concerns, such as newline handling, backspace processing,
+//! or escape sequence interpretation, are intentionally out of scope. A small
+//! helper (TODO) is planned for basic use cases and toy projects, but full
+//! VT102 compatibility is explicitly not a goal.
+//!
+//! [uart]: https://en.wikipedia.org/wiki/16550_UART
 
 #![no_std]
 #![deny(
@@ -39,8 +55,6 @@
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 #![deny(rustdoc::all)]
-// I can't do much about that.
-#![allow(clippy::multiple_crate_versions)]
 
 #[cfg(test)]
 extern crate std;
@@ -59,10 +73,47 @@ pub mod spec;
 mod backend;
 mod config;
 mod error;
+mod tty;
 
-/// Abstraction over a [16550 UART device][uart].
+/// Powerful abstraction over a [16550 UART device][uart] with access to
+/// low-level details but also high usability for higher-level layers.
 ///
-/// All reads and writes from/to that device operate on the hardware.
+/// All reads and writes involving device register from/to that device operate
+/// on the underlying hardware.
+///
+/// This type is generic over x86 port I/O and MMIO via the corresponding
+/// constructors (`new_port()/new_mmio())`.
+///
+/// # Example (Minimal)
+///
+/// ```rust
+/// # use uart16550_driver::{Config, Uart16550};
+/// let port = Uart16550::new_port(0x3f8, Config::default()).unwrap();
+/// port.init().unwrap();
+/// port.send_bytes_all(b"hello world!");
+/// ```
+///
+/// # Example (Recommended)
+///
+/// ```rust
+/// # use uart16550_driver::{Config, Uart16550};
+/// let port = Uart16550::new_port(0x3f8, Config::default()).expect("should be valid port");
+/// port.init().expect("should init device successfully");
+/// port.test_loopback().expect("should have working loopback mode");
+/// port.check_remote_ready_to_receive().expect("should have physically connected receiver")
+/// port.send_bytes_all(b"hello world!");
+/// ```
+///
+/// # Sending and Receiving Data
+///
+/// - [`Uart16550::try_send_byte`]: try to send a single byte
+/// - [`Uart16550::send_bytes`]: try to send provided bytes and return `n`
+/// - [`Uart16550::send_bytes_all`]: send all provided bytes
+/// - [`Uart16550::try_receive_byte`]: try to receive a single byte
+/// - [`Uart16550::receive_bytes`]: try to receive bytes into a buffer and return
+///   `n`
+/// - [`Uart16550::receive_bytes_all`]: receive bytes until provided buffer is
+///   filled
 ///
 /// [uart]: https://en.wikipedia.org/wiki/16550_UART
 #[derive(Debug)]
@@ -79,7 +130,7 @@ impl Uart16550<PioBackend> {
     /// # Safety
     ///
     /// Callers must ensure that the address is valid and safe to use.
-    pub unsafe fn new_port(
+    pub const unsafe fn new_port(
         base_port: u16,
         config: Config,
     ) -> Result<Self, InvalidAddressError<PortIoAddress>> {
@@ -124,7 +175,10 @@ impl<B: Backend> Uart16550<B> {
     /// device can properly receive data and send data.
     ///
     /// It is recommended to call [`Self::test_loopback`] next to check the
-    /// device.
+    /// device works.
+    ///
+    /// This function also tries to detect if the UART is present at all by
+    /// writing a byte to the [`SPR`] register and reading from it afterwards.
     ///
     /// # Safety
     ///
@@ -133,6 +187,8 @@ impl<B: Backend> Uart16550<B> {
     ///
     /// Further, the serial config must match the expectations of the wire and
     /// the other side. Otherwise, garbage will be received.
+    ///
+    /// [`SPR`]: crate::spec::registers::SPR
     pub fn init(&mut self) -> Result<(), InitError> {
         // SPR test: write something and try to read it again.
         // SAFETY: We operate on valid register addresses.
@@ -146,7 +202,7 @@ impl<B: Backend> Uart16550<B> {
             }
         }
 
-        // Disable all interrupts.
+        // Disable all interrupts (for now).
         // SAFETY: We operate on valid register addresses.
         unsafe {
             self.backend.write(offsets::IER as u8, 0);
@@ -163,7 +219,8 @@ impl<B: Backend> Uart16550<B> {
                 self.config.baud_rate.to_integer(),
                 self.config.prescaler_division_factor,
             )
-            .map_err(|e| InitError::InvalidBaudRate(e))?;
+            .map_err(InitError::InvalidBaudRate)?;
+
             let low = (divisor & 0xff) as u8;
             let high = ((divisor >> 8) & 0xff) as u8;
             self.backend.write(offsets::DLL as u8, low);
@@ -177,11 +234,11 @@ impl<B: Backend> Uart16550<B> {
         // SAFETY: We operate on valid register addresses.
         unsafe {
             let mut lcr = LCR::from_bits_retain(0);
-            lcr.set_word_length(self.config.data_bits);
+            lcr = lcr.set_word_length(self.config.data_bits);
             if self.config.extra_stop_bits {
                 lcr |= LCR::MORE_STOP_BITS;
             }
-            lcr.set_parity(self.config.parity);
+            lcr = lcr.set_parity(self.config.parity);
             // don't set break
             // don't set DLAB
             self.backend.write(offsets::LCR as u8, lcr.bits());
@@ -198,7 +255,7 @@ impl<B: Backend> Uart16550<B> {
             fcr |= FCR::TX_FIFO_RESET;
             // don't set DMA mode
             if let Some(level) = self.config.fifo_trigger_level {
-                fcr.set_fifo_trigger_level(level);
+                fcr = fcr.set_fifo_trigger_level(level);
             }
 
             self.backend.write(offsets::FCR as u8, fcr.bits());
@@ -233,7 +290,7 @@ impl<B: Backend> Uart16550<B> {
     ///
     /// The FIFO must be configured for this test.
     ///
-    /// It is recommended to call this function after [`Self::init`].
+    /// It is **recommended** to call this function **after** [`Self::init`].
     pub fn test_loopback(&mut self) -> Result<(), LoopbackFailedError> {
         /// Single test byte. Chosen arbitrarily.
         const TEST_BYTE: u8 = 42;
@@ -256,7 +313,7 @@ impl<B: Backend> Uart16550<B> {
                 }
             }
 
-            // Now check a message
+            // Now check a whole message
             {
                 let n = self.send_bytes(TEST_MESSAGE.as_bytes());
                 if n != TEST_MESSAGE.len() {
@@ -289,6 +346,8 @@ impl<B: Backend> Uart16550<B> {
     /// Once this check succeeds, one can see the connection as established.
     /// A [`InterruptType::ModemStatus`] may indicate that this check needs to
     /// be performed again.
+    ///
+    /// [`InterruptType::ModemStatus`]: crate::spec::registers::InterruptType::ModemStatus
     pub fn check_remote_ready_to_receive(&mut self) -> Result<(), RemoteReadyToReceiveError> {
         // SAFETY: We operate on valid register addresses.
         let msr = unsafe { self.backend.read(offsets::MSR as u8) };

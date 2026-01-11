@@ -23,6 +23,8 @@ mod errors {
 
     /// Error that is returned when [`calc_baud_rate`] could not calculate an even
     /// baud rate, i.e., a baud rate that is representable as integer.
+    ///
+    /// [`calc_baud_rate`]: crate::spec::calc_baud_rate
     #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Hash)]
     pub struct NonIntegerBaudRateError {
         /// The frequency of the UART 16550.
@@ -47,6 +49,8 @@ mod errors {
 
     /// Error that is returned when [`calc_divisor`] could not calculate an even
     /// baud rate, i.e., a baud rate that is representable as integer.
+    ///
+    /// [`calc_divisor`]: crate::spec::calc_divisor
     #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Hash)]
     pub struct NonIntegerDivisorError {
         /// The frequency of the UART 16550.
@@ -83,11 +87,7 @@ pub fn calc_baud_rate(
     divisor: u32,
     prescaler_division_factor: Option<u32>,
 ) -> Result<u32, NonIntegerBaudRateError> {
-    let psd = if let Some(psd) = prescaler_division_factor {
-        psd
-    } else {
-        0
-    };
+    let psd = prescaler_division_factor.map_or(0, |psd| psd);
     let a = frequency;
     let b = 16 * (psd + 1) * divisor;
 
@@ -104,6 +104,7 @@ pub fn calc_baud_rate(
 
 /// Similar to [`calc_baud_rate`] but with known baud rate to calculate the
 /// frequency.
+#[must_use]
 pub const fn calc_frequency(
     baud_rate: u32,
     divisor: u32,
@@ -282,6 +283,7 @@ pub mod registers {
         ///
         /// The priority of the interrupt is available via
         /// [`InterruptType::priority`].
+        #[must_use]
         pub fn interrupt_type(self) -> Option<InterruptType> {
             InterruptType::from_bits(self.bits())
         }
@@ -364,21 +366,23 @@ pub mod registers {
         /// The last two priority levels are not found in standard 16550 UART
         /// and may appear only if the DMA End signaling is enabled
         /// (bit 4 of FCR).
+        #[must_use]
         pub const fn priority(self) -> u8 {
             match self {
-                InterruptType::ReceiverLineStatus => 1,
-                InterruptType::ReceivedDataReady => 2,
-                InterruptType::ReceptionTimeout => 2,
-                InterruptType::TransmitterHoldingRegisterEmpty => 3,
-                InterruptType::ModemStatus => 4,
-                InterruptType::DmaReceptionEndOfTransfer => 5,
-                InterruptType::DmaTransmissionEndOfTransfer => 6,
+                Self::ReceiverLineStatus => 1,
+                Self::ReceivedDataReady => 2,
+                Self::ReceptionTimeout => 2,
+                Self::TransmitterHoldingRegisterEmpty => 3,
+                Self::ModemStatus => 4,
+                Self::DmaReceptionEndOfTransfer => 5,
+                Self::DmaTransmissionEndOfTransfer => 6,
             }
         }
 
         /// Returns a [`InterruptType`] that corresponds to the bits in
         /// [`ISR`]
-        pub fn from_bits(isr_bits: u8) -> Option<InterruptType> {
+        #[must_use]
+        pub fn from_bits(isr_bits: u8) -> Option<Self> {
             let bits = isr_bits & 0xf;
 
             let has_interrupt = (bits & 1) == 0;
@@ -389,13 +393,13 @@ pub mod registers {
 
             // Taken from the table on page 11/18 in <https://caro.su/msx/ocm_de1/16550.pdf>
             let typ = match bits {
-                0b011 => InterruptType::ReceiverLineStatus,
-                0b010 => InterruptType::ReceivedDataReady,
-                0b110 => InterruptType::ReceptionTimeout,
-                0b001 => InterruptType::TransmitterHoldingRegisterEmpty,
-                0b000 => InterruptType::ModemStatus,
-                0b111 => InterruptType::DmaReceptionEndOfTransfer,
-                0b101 => InterruptType::DmaTransmissionEndOfTransfer,
+                0b011 => Self::ReceiverLineStatus,
+                0b010 => Self::ReceivedDataReady,
+                0b110 => Self::ReceptionTimeout,
+                0b001 => Self::TransmitterHoldingRegisterEmpty,
+                0b000 => Self::ModemStatus,
+                0b111 => Self::DmaReceptionEndOfTransfer,
+                0b101 => Self::DmaTransmissionEndOfTransfer,
                 _ => panic!("unexpected bit sequence: {bits:x}"),
             };
 
@@ -462,12 +466,14 @@ pub mod registers {
 
     impl FCR {
         /// Returns the trigger level of the FIFO.
+        #[must_use]
         pub const fn fifo_trigger_level(self) -> FifoTriggerLevel {
             let bits = (self.bits() >> 6) & 0b11;
             FifoTriggerLevel::from_raw_bits(bits)
         }
 
         /// Sets the trigger level of the FIFO.
+        #[must_use]
         pub fn set_fifo_trigger_level(self, value: FifoTriggerLevel) -> Self {
             self | Self::from_bits_retain(value.to_raw_bits())
         }
@@ -509,13 +515,14 @@ pub mod registers {
         ///
         /// This function operates on the value as-is and does not perform any
         /// shifting bits.
+        #[must_use]
         pub const fn from_raw_bits(bits: u8) -> Self {
             let bits = bits & 0b11;
             match bits {
-                0b00 => FifoTriggerLevel::One,
-                0b01 => FifoTriggerLevel::Four,
-                0b10 => FifoTriggerLevel::Eight,
-                0b11 => FifoTriggerLevel::Fourteen,
+                0b00 => Self::One,
+                0b01 => Self::Four,
+                0b10 => Self::Eight,
+                0b11 => Self::Fourteen,
                 _ => unreachable!(),
             }
         }
@@ -524,12 +531,13 @@ pub mod registers {
         ///
         /// This function operates on the value as-is and does not perform any
         /// shifting bits.
+        #[must_use]
         pub const fn to_raw_bits(self) -> u8 {
             match self {
-                FifoTriggerLevel::One => 0b00,
-                FifoTriggerLevel::Four => 0b01,
-                FifoTriggerLevel::Eight => 0b10,
-                FifoTriggerLevel::Fourteen => 0b11,
+                Self::One => 0b00,
+                Self::Four => 0b01,
+                Self::Eight => 0b10,
+                Self::Fourteen => 0b11,
             }
         }
     }
@@ -574,23 +582,27 @@ pub mod registers {
 
     impl LCR {
         /// Returns the [`WordLength`].
+        #[must_use]
         pub const fn word_length(self) -> WordLength {
             let bits = self.bits() & 0b11;
             WordLength::from_raw_bits(bits)
         }
 
         /// Sets the [`WordLength`].
+        #[must_use]
         pub fn set_word_length(self, value: WordLength) -> Self {
             self | Self::from_bits_retain(value.to_raw_bits())
         }
 
         /// Returns the [`Parity`].
+        #[must_use]
         pub const fn parity(self) -> Parity {
             let bits = (self.bits() >> 3) & 0b111;
             Parity::from_raw_bits(bits)
         }
 
         /// Sets the [`Parity`].
+        #[must_use]
         pub fn set_parity(self, value: Parity) -> Self {
             self | Self::from_bits_retain(value.to_raw_bits())
         }
@@ -622,6 +634,7 @@ pub mod registers {
         ///
         /// This function operates on the value as-is and does not perform any
         /// shifting bits.
+        #[must_use]
         pub const fn from_raw_bits(bits: u8) -> Self {
             let bits = bits & 0b11;
             match bits {
@@ -637,6 +650,7 @@ pub mod registers {
         ///
         /// This function operates on the value as-is and does not perform any
         /// shifting bits.
+        #[must_use]
         pub const fn to_raw_bits(self) -> u8 {
             match self {
                 Self::FiveBits => 0b00,
@@ -694,6 +708,7 @@ pub mod registers {
         ///
         /// This function operates on the value as-is and does not perform any
         /// shifting bits.
+        #[must_use]
         pub const fn to_raw_bits(self) -> u8 {
             match self {
                 Self::Disabled => 0b000,
@@ -1013,11 +1028,13 @@ pub mod registers {
 
     impl PSD {
         /// Returns the Prescaler's Division Factor (PDF).
+        #[must_use]
         pub const fn pdf(self) -> u8 {
             self.bits() & 0xf
         }
 
         /// Sets the Prescaler's Division Factor (PDF).
+        #[must_use]
         pub const fn set_pdf(self, pdf: u8) -> Self {
             Self::from_bits_retain(pdf)
         }
