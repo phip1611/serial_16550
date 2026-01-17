@@ -3,7 +3,7 @@
 //! Errors that can happen when working with [`Uart16550`].
 
 use crate::backend::RegisterAddress;
-use crate::spec::{NonIntegerDivisorError};
+use crate::spec::NonIntegerDivisorError;
 use core::error::Error;
 use core::fmt::Display;
 

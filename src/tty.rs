@@ -6,37 +6,97 @@
 //! This module is suited for basic use cases and toy projects, but full VT102
 //! compatibility is explicitly not a goal.
 //!
+//! For lower-level access of the underlying hardware, use [`Uart16550`]
+//! instead.
+//!
 //! See [`Uart16550Tty`].
 
-use crate::{Config, InvalidAddressError, Uart16550};
-use crate::backend::{Backend, MmioAddress, MmioBackend, PioBackend, PortIoAddress};
-use core::fmt;
-use crate::spec::registers::offsets;
+use crate::backend::{Backend, MmioAddress, MmioBackend, RegisterAddress};
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use crate::backend::{PioBackend, PortIoAddress};
+use crate::{Config, InitError, InvalidAddressError, LoopbackFailedError, Uart16550};
+use core::error::Error;
+use core::fmt::{self, Display, Formatter};
 
-/// Thin abstraction over a [`Uart16550`] that helps to send Rust strings as
-/// expected to the other side.
+/// Errors that [`Uart16550Tty::new_port`] and [`Uart16550Tty::new_mmio`] may
+/// return.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Uart16550TtyError<A: RegisterAddress> {
+    /// The underlying address is invalid.
+    AddressError(InvalidAddressError<A>),
+    /// Error initializing the device.
+    InitError(InitError),
+    /// The device could not be tested.
+    TestError(LoopbackFailedError),
+}
+
+impl<A: RegisterAddress> Display for Uart16550TtyError<A> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AddressError(e) => {
+                write!(f, "{e}")
+            }
+            Self::InitError(e) => {
+                write!(f, "error initializing the device: {e}")
+            }
+            Self::TestError(e) => {
+                write!(f, "error testing the device: {e}")
+            }
+        }
+    }
+}
+
+impl<A: RegisterAddress + 'static> Error for Uart16550TtyError<A> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::AddressError(e) => Some(e),
+            Self::InitError(e) => Some(e),
+            Self::TestError(e) => Some(e),
+        }
+    }
+}
+
+/// Thin opinionated abstraction over [`Uart16550`] that helps to send Rust
+/// strings easily to the other side, assuming the remote is a TTY (terminal).
+///
+/// It is especially suited as very easy way to see something when you develop
+/// and test things in a VM.
+///
+/// It implements [`fmt::Write`].
+///
+/// # Example
+/// ```rust,no_run
+/// use uart_16550::{Config, Uart16550Tty};
+/// use core::fmt::Write;
+///
+/// let mut uart = unsafe { Uart16550Tty::new_port(0x3f8, Config::default()).expect("should initialize device") };
+/// //                                    ^ you could also use `new_mmio(0x1000 as *mut _)` here
+/// uart.write_str("hello world\nhow's it going?");
+/// ```
 #[derive(Debug)]
 pub struct Uart16550Tty<B: Backend>(Uart16550<B>);
-
-
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 impl Uart16550Tty<PioBackend> {
     /// Creates a new [`Uart16550Tty`] backed by x86 port I/O.
     ///
+    /// Initializes the device and performs a self-test.
+    ///
     /// # Safety
     ///
     /// Callers must ensure that the address is valid and safe to use.
-    pub const unsafe fn new_port(
+    pub unsafe fn new_port(
         base_port: u16,
         config: Config,
-    ) -> Result<Self, InvalidAddressError<PortIoAddress>> {
-        if base_port.checked_add(offsets::MAX as u16).is_none() {
-            return Err(InvalidAddressError(PortIoAddress(base_port)));
-        }
-
-        let backend = PioBackend(PortIoAddress(base_port));
-        let inner = Uart16550 { backend, config };
+    ) -> Result<Self, Uart16550TtyError<PortIoAddress>> {
+        // SAFETY: The I/O port is valid and we have exclusive access.
+        let mut inner = unsafe {
+            Uart16550::new_port(base_port, config).map_err(Uart16550TtyError::AddressError)?
+        };
+        inner.init().map_err(Uart16550TtyError::InitError)?;
+        inner
+            .test_loopback()
+            .map_err(Uart16550TtyError::TestError)?;
         Ok(Self(inner))
     }
 }
@@ -44,31 +104,37 @@ impl Uart16550Tty<PioBackend> {
 impl Uart16550Tty<MmioBackend> {
     /// Creates a new [`Uart16550Tty`] backed by MMIO.
     ///
+    /// Initializes the device and performs a self-test.
+    ///
     /// # Safety
     ///
     /// Callers must ensure that the address is valid and safe to use.
     pub unsafe fn new_mmio(
         base_address: *mut u8,
         config: Config,
-    ) -> Result<Self, InvalidAddressError<MmioAddress>> {
-        if base_address.is_null() {
-            return Err(InvalidAddressError(MmioAddress(base_address)));
-        }
-        if (base_address as usize).checked_add(offsets::MAX).is_none() {
-            return Err(InvalidAddressError(MmioAddress(base_address)));
-        }
-
-        let backend = MmioBackend(MmioAddress(base_address));
-        let inner = Uart16550 { backend, config };
+    ) -> Result<Self, Uart16550TtyError<MmioAddress>> {
+        // SAFETY: The I/O port is valid and we have exclusive access.
+        let mut inner = unsafe {
+            Uart16550::new_mmio(base_address, config).map_err(Uart16550TtyError::AddressError)?
+        };
+        inner.init().map_err(Uart16550TtyError::InitError)?;
+        inner
+            .test_loopback()
+            .map_err(Uart16550TtyError::TestError)?;
         Ok(Self(inner))
     }
 }
 
 impl<B: Backend> Uart16550Tty<B> {
-    pub fn init(&mut self) {
-        self.0.init().unwrap();
-        self.0.test_loopback().unwrap();
-        self.0.check_remote_ready_to_receive().unwrap();
+
+    /// Returns a reference to the underlying [`Uart16550`].
+    pub fn inner(&self) -> &Uart16550<B> {
+        &self.0
+    }
+
+    /// Returns a mutable reference to the underlying [`Uart16550`].
+    pub fn inner_mut(&mut self) -> &mut Uart16550<B> {
+        &mut self.0
     }
 }
 
@@ -79,13 +145,13 @@ impl<B: Backend> fmt::Write for Uart16550Tty<B> {
                 // backspace or delete
                 8 | 0x7F => {
                     self.0.send_bytes_all(&[8]);
-                    self.0.send_bytes_all(&[b' ']);
+                    self.0.send_bytes_all(b" ");
                     self.0.send_bytes_all(&[8]);
                 }
                 // Normal Rust newlines to terminal-compatible newlines.
                 b'\n' => {
-                    self.0.send_bytes_all(&[b'\r']);
-                    self.0.send_bytes_all(&[b'\n']);
+                    self.0.send_bytes_all(b"\r");
+                    self.0.send_bytes_all(b"\n");
                 }
                 data => {
                     self.0.send_bytes_all(&[data]);

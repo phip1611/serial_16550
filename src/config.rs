@@ -8,14 +8,14 @@ use crate::spec::CLK_FREQUENCY_HZ;
 use crate::spec::registers::{FifoTriggerLevel, IER, Parity, WordLength};
 use core::cmp::Ordering;
 
-/// The speed of data transmission, measured in symbols per second (or bits, in
-/// the case of simple UARTs).
+/// The speed of data transmission, measured in symbols (bits) per second.
 ///
 /// This type is a convenient and non-ABI compatible abstraction. Use
 /// [`calc_divisor`] to get the divisor for [`DLL`] and [`DLM`].
 ///
-/// [`DLL`]: registers::DLL
-/// [`DLM`]: registers::DLM
+/// [`DLL`]: crate::spec::registers::DLL
+/// [`DLM`]: crate::spec::registers::DLM
+/// [`calc_divisor`]: crate::spec::calc_divisor
 #[allow(missing_docs)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum BaudRate {
@@ -99,7 +99,7 @@ pub struct Config {
     pub interrupts: IER,
     /// The frequency which typically is [`CLK_FREQUENCY_HZ`].
     pub frequency: u32,
-    /// The optional prescaler divison factor.
+    /// The optional prescaler division factor.
     ///
     /// This is a non-standard functionality (i.e., it is not present in the
     /// industry standard 16550 UART). Its purpose is to provide a second

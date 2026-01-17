@@ -1,45 +1,81 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! # uart16550_driver
+//! # uart_16550
 //!
 //! Simple yet highly configurable low-level driver for
 //! [16550 UART devices][uart], typically known and used as serial ports or
 //! COM ports. Easy integration into Rust while providing fine-grained control
-//! where needed (e.g, for kernel drivers).
+//! where needed (e.g., for kernel drivers).
 //!
 //! The "serial device" or "COM port" in typical x86 machines is almost always
 //! backed by a **16550 UART devices**, may it be physical or emulated. This
 //! crate offers convenient and powerful abstractions for these devices, and
-//! also works for other architectures such as ARM or RISC-V.
+//! also works for other architectures, such as ARM or RISC-V, by offering
+//! support for MMIO-mapped devices.
 //!
 //! Serial ports are especially useful for debugging or operating system
 //! learning projects. See [`Uart16550`] to get started.
 //!
 //! ## Features
 //!
-//! - ✅ Full transmit and receive support for UART 16550–compatible devices
-//! - ✅ `no_std`-compatible and allocation-free by design
-//! - ✅ Validated on **real hardware** as well as across different virtua
+//! - ✅ Full configure, transmit, receive, and interrupt support for UART
+//!   16550–compatible devices
+//! - ✅ High-level, ergonomic abstractions and types paired with support for
+//!   plain integers
+//! - ✅ Very easy to integrate, highly configurable when needed
+//! - ✅ Validated on **real hardware** as well as across different virtual
 //!   machines
-//! - ✅ Supports both x86 port-mapped I/O and memory-mapped I/O (MMIO)
-//! - ✅ High-level, ergonomic abstractions paired with support for plain integers
-//! - ✅ x86 port I/O but also MMIO support
-//! - ✅ Highly configurable to cover a wide range of setups
 //! - ✅ Fully type-safe and derived directly from the official
 //!   [specification][uart]
+//! - ✅ Supports both **x86 port-mapped I/O** and **memory-mapped I/O** (MMIO)
+//! - ✅ `no_std`-compatible and allocation-free by design
 //!
 //! ## Focus, Scope & Limitations
 //!
 //! While serial ports are often used in conjunction with VT102-like terminal
-//! emulation, the primary focus of `uart16550_driver` is strict specification
+//! emulation, the primary focus of this crate is strict specification
 //! compliance and convenient direct access to the underlying hardware for
 //! transmitting and receiving bytes, including all necessary device
 //! configuration.
 //!
-//! Terminal emulation concerns, such as newline handling, backspace processing,
-//! or escape sequence interpretation, are intentionally out of scope. A small
-//! helper (TODO) is planned for basic use cases and toy projects, but full
-//! VT102 compatibility is explicitly not a goal.
+//! For basic terminal-related functionality, such as newline normalization and
+//! backspace handling, we provide [`Uart16550Tty`] as a **basic** convenience
+//! layer.
+//!
+//! # Overview
+//!
+//! Use [`Uart16550Tty`] for a quick start. For more fine-grained low-level
+//! control, please have a look at [`Uart16550`] instead.
+//!
+//! # Example (Minimalistic)
+//!
+//! ```rust,no_run
+//! use uart_16550::{Config, Uart16550Tty};
+//! use core::fmt::Write;
+//!
+//! // SAFETY: The I/O port is valid and we have exclusive access.
+//! let mut uart = unsafe { Uart16550Tty::new_port(0x3f8, Config::default()).expect("should initialize device") };
+//! //                                 ^ you could also use `new_mmio(0x1000 as *mut _)` here
+//! uart.write_str("hello world\nhow's it going?");
+//! ```
+//!
+//! See [`Uart16550Tty`] for more details.
+//!
+//! # Example (More low-level control)
+//!
+//! ```rust,no_run
+//! use uart_16550::{Config, Uart16550};
+//!
+//! // SAFETY: The I/O port is valid and we have exclusive access.
+//! let mut uart = unsafe { Uart16550::new_port(0x3f8, Config::default()).expect("should be valid port") };
+//! //                                 ^ you could also use `new_mmio(0x1000 as *mut _)` here
+//! uart.init().expect("should init device successfully");
+//! uart.test_loopback().expect("should have working loopback mode");
+//! uart.check_remote_ready_to_receive().expect("should have physically connected receiver");
+//! uart.send_bytes_all(b"hello world!");
+//! ```
+//!
+//! See [`Uart16550`] for more details.
 //!
 //! [uart]: https://en.wikipedia.org/wiki/16550_UART
 
@@ -50,7 +86,8 @@
     clippy::nursery,
     clippy::must_use_candidate,
     clippy::missing_safety_doc,
-    clippy::undocumented_unsafe_blocks
+    clippy::undocumented_unsafe_blocks,
+    clippy::needless_pass_by_value
 )]
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
@@ -59,14 +96,16 @@
 #[cfg(test)]
 extern crate std;
 
-use core::str::{from_utf8};
-use crate::backend::{
-    Backend, MmioAddress, MmioBackend, PioBackend, PortIoAddress,
-};
-pub use crate::config::Config;
+pub use crate::config::*;
 pub use crate::error::*;
-use crate::spec::registers::{FCR, IER, ISR, LCR, LSR, MCR, MSR, offsets};
-use crate::spec::{calc_divisor};
+pub use crate::tty::*;
+
+use crate::backend::{Backend, MmioAddress, MmioBackend};
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use crate::backend::{PioBackend, PortIoAddress};
+use crate::spec::registers::{DLL, DLM, FCR, IER, ISR, LCR, LSR, MCR, MSR, SPR, offsets};
+use crate::spec::{calc_baud_rate, calc_divisor};
+use core::str::from_utf8;
 
 pub mod spec;
 
@@ -76,32 +115,38 @@ mod error;
 mod tty;
 
 /// Powerful abstraction over a [16550 UART device][uart] with access to
-/// low-level details but also high usability for higher-level layers.
+/// low-level details paired with strong flexibility for higher-level layers.
 ///
 /// All reads and writes involving device register from/to that device operate
 /// on the underlying hardware.
 ///
 /// This type is generic over x86 port I/O and MMIO via the corresponding
-/// constructors (`new_port()/new_mmio())`.
+/// constructors (`[Uart16550::new_port()]` and [`Uart16550::new_mmio()]`.
 ///
 /// # Example (Minimal)
 ///
-/// ```rust
-/// # use uart16550_driver::{Config, Uart16550};
-/// let port = Uart16550::new_port(0x3f8, Config::default()).unwrap();
-/// port.init().unwrap();
-/// port.send_bytes_all(b"hello world!");
+/// ```rust,no_run
+/// use uart_16550::{Config, Uart16550};
+///
+/// // SAFETY: The I/O port is valid and we have exclusive access.
+/// let mut uart = unsafe { Uart16550::new_port(0x3f8, Config::default()).unwrap() };
+/// //                                 ^ you could also use `new_mmio(0x1000 as *mut _)` here
+/// uart.init().unwrap();
+/// uart.send_bytes_all(b"hello world!");
 /// ```
 ///
 /// # Example (Recommended)
 ///
-/// ```rust
-/// # use uart16550_driver::{Config, Uart16550};
-/// let port = Uart16550::new_port(0x3f8, Config::default()).expect("should be valid port");
-/// port.init().expect("should init device successfully");
-/// port.test_loopback().expect("should have working loopback mode");
-/// port.check_remote_ready_to_receive().expect("should have physically connected receiver")
-/// port.send_bytes_all(b"hello world!");
+/// ```rust,no_run
+/// use uart_16550::{Config, Uart16550};
+///
+/// // SAFETY: The I/O port is valid and we have exclusive access.
+/// let mut uart = unsafe { Uart16550::new_port(0x3f8, Config::default()).expect("should be valid port") };
+/// //                                 ^ you could also use `new_mmio(0x1000 as *mut _)` here
+/// uart.init().expect("should init device successfully");
+/// uart.test_loopback().expect("should have working loopback mode");
+/// uart.check_remote_ready_to_receive().expect("should have physically connected receiver");
+/// uart.send_bytes_all(b"hello world!");
 /// ```
 ///
 /// # Sending and Receiving Data
@@ -119,6 +164,7 @@ mod tty;
 #[derive(Debug)]
 pub struct Uart16550<B: Backend> {
     backend: B,
+    base_address: B::A,
     // The currently active config.
     config: Config,
 }
@@ -134,13 +180,14 @@ impl Uart16550<PioBackend> {
         base_port: u16,
         config: Config,
     ) -> Result<Self, InvalidAddressError<PortIoAddress>> {
+        let base_address = PortIoAddress(base_port);
         if base_port.checked_add(offsets::MAX as u16).is_none() {
-            return Err(InvalidAddressError(PortIoAddress(base_port)));
+            return Err(InvalidAddressError(base_address));
         }
 
-        let backend = PioBackend(PortIoAddress(base_port));
+        let backend = PioBackend(base_address);
 
-        Ok(Self { backend, config })
+        Ok(Self { backend, base_address, config })
     }
 }
 
@@ -154,16 +201,17 @@ impl Uart16550<MmioBackend> {
         base_address: *mut u8,
         config: Config,
     ) -> Result<Self, InvalidAddressError<MmioAddress>> {
-        if base_address.is_null() {
-            return Err(InvalidAddressError(MmioAddress(base_address)));
+        let base_address = MmioAddress(base_address);
+        if base_address.0.is_null() {
+            return Err(InvalidAddressError(base_address));
         }
-        if (base_address as usize).checked_add(offsets::MAX).is_none() {
-            return Err(InvalidAddressError(MmioAddress(base_address)));
+        if (base_address.0 as usize).checked_add(offsets::MAX).is_none() {
+            return Err(InvalidAddressError(base_address));
         }
 
-        let backend = MmioBackend(MmioAddress(base_address));
+        let backend = MmioBackend(base_address);
 
-        Ok(Self { backend, config })
+        Ok(Self { backend, base_address, config })
     }
 }
 
@@ -171,7 +219,7 @@ impl<B: Backend> Uart16550<B> {
     /* ----- Init, Setup, Tests --------------------------------------------- */
 
     /// Initializes the devices according to the provided [`Config`] including a
-    /// few typical as well as opinionated settings so that afterwords, the
+    /// few typical as well as opinionated settings so that afterwards, the
     /// device can properly receive data and send data.
     ///
     /// It is recommended to call [`Self::test_loopback`] next to check the
@@ -187,10 +235,9 @@ impl<B: Backend> Uart16550<B> {
     ///
     /// Further, the serial config must match the expectations of the wire and
     /// the other side. Otherwise, garbage will be received.
-    ///
-    /// [`SPR`]: crate::spec::registers::SPR
     pub fn init(&mut self) -> Result<(), InitError> {
         // SPR test: write something and try to read it again.
+        // => detect if UART16550 is there
         // SAFETY: We operate on valid register addresses.
         unsafe {
             let write = 0x42;
@@ -313,7 +360,7 @@ impl<B: Backend> Uart16550<B> {
                 }
             }
 
-            // Now check a whole message
+            // Now check sending and reading a whole message
             {
                 let n = self.send_bytes(TEST_MESSAGE.as_bytes());
                 if n != TEST_MESSAGE.len() {
@@ -325,8 +372,7 @@ impl<B: Backend> Uart16550<B> {
                 if n != TEST_MESSAGE.len() {
                     return Err(LoopbackFailedError);
                 }
-                let string = from_utf8(&read_buffer)
-                    .map_err(|_| LoopbackFailedError)?;
+                let string = from_utf8(&read_buffer).map_err(|_| LoopbackFailedError)?;
 
                 if string != TEST_MESSAGE {
                     return Err(LoopbackFailedError);
@@ -453,7 +499,7 @@ impl<B: Backend> Uart16550<B> {
         for byte in bytes {
             // Loop until we can send the byte.
             loop {
-                if  self.try_send_byte(*byte).is_ok() {
+                if self.try_send_byte(*byte).is_ok() {
                     break;
                 }
             }
@@ -516,5 +562,108 @@ impl<B: Backend> Uart16550<B> {
         let val = unsafe { self.backend.read(offsets::MSR as u8) };
         // SAFETY: All possible bits are typed.
         unsafe { MSR::from_bits(val).unwrap_unchecked() }
+    }
+
+    /// Fetches the current value from the [`SPR`].
+    pub fn spr(&mut self) -> SPR {
+        // SAFETY: We operate on valid register addresses.
+        unsafe { self.backend.read(offsets::SPR as u8) }
+    }
+
+    /// Fetches the current values from the [`DLL`] and [`DLM`].
+    ///
+    /// # Safety
+    ///
+    /// This is unsafe as it will temporarily set the DLAB bit which may hinder
+    /// or negatively influence normal operation.
+    pub unsafe fn dll_dlm(&mut self) -> (DLL, DLM) {
+        let old_lcr = self.lcr();
+        // SAFETY: We operate on valid register addresses.
+        unsafe {
+            self.backend
+                .write(offsets::LCR as u8, (old_lcr | LCR::DLAB).bits());
+
+            let dll = self.backend.read(offsets::DLL as u8);
+            let dlm = self.backend.read(offsets::DLM as u8);
+            self.backend.write(offsets::LCR as u8, old_lcr.bits());
+            (dll, dlm)
+        }
+    }
+
+    /* ----- Misc ----------------------------------------------------------- */
+
+    /// Returns the config with that the device was initialized as well as the
+    /// base address.
+    ///
+    /// To get the values that are currently in the registers, consider using
+    /// [`Self::config_register_dump`].
+    pub fn config(&self) -> (&Config, B::A) {
+        (&self.config, self.base_address)
+    }
+
+    /// Queries the device and returns a [`ConfigRegisterDump`].
+    ///
+    /// # Safety
+    ///
+    /// Reading on some registers may have side-effects, for example in the
+    /// [`LSR`].
+    pub unsafe fn config_register_dump(&mut self) -> ConfigRegisterDump {
+        // SAFETY: Caller ensured access is okay.
+        let (dll, dlm) = unsafe { self.dll_dlm() };
+        ConfigRegisterDump {
+            ier: self.ier(),
+            isr: self.isr(),
+            lcr: self.lcr(),
+            mcr: self.mcr(),
+            lsr: self.lsr(),
+            msr: self.msr(),
+            spr: self.spr(),
+            dll,
+            dlm,
+        }
+    }
+}
+
+/// A dump of all (readable) config registers of [`Uart16550`].
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[allow(missing_docs)]
+pub struct ConfigRegisterDump {
+    pub ier: IER,
+    pub isr: ISR,
+    pub lcr: LCR,
+    pub mcr: MCR,
+    pub lsr: LSR,
+    pub msr: MSR,
+    pub spr: SPR,
+    pub dll: DLL,
+    pub dlm: DLM,
+}
+
+impl ConfigRegisterDump {
+    /// Returns the effective divisor.
+    ///
+    /// Using [`calc_baud_rate`], you can calculate the effective baud rate. You
+    /// can also use [`Self::baud_rate()`].
+    #[must_use]
+    pub const fn divisor(&self) -> u16 {
+        let dll = self.dll as u16;
+        let dlm = self.dlm as u16;
+        (dlm << 8) | dll
+    }
+
+    /// Returns the effective divisor.
+    ///
+    /// Using [`calc_baud_rate`], you can calculate the effective
+    /// [`BaudRate`].
+    #[must_use]
+    pub fn baud_rate(&self, config: &Config) -> BaudRate {
+        let divisor = self.divisor();
+        let baud_rate = calc_baud_rate(
+            config.frequency,
+            divisor as u32,
+            config.prescaler_division_factor,
+        )
+        .expect("should be able to calculate baud rate from the given valid values");
+        BaudRate::from_integer(baud_rate)
     }
 }

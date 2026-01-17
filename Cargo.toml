@@ -1,9 +1,9 @@
 [package]
-name = "uart16550_driver"
+name = "uart_16550"
 description = """
 Simple yet highly configurable low-level driver for 16550 UART devices,
 typically known and used as serial ports or COM ports. Easy integration into
-Rust while providing fine-grained control where needed (e.g, for kernel
+Rust while providing fine-grained control where needed (e.g., for kernel
 drivers).
 """
 version = "0.1.0"
@@ -13,9 +13,9 @@ keywords = ["uart-16550", "serial", "com", "posix", "driver"]
 categories = ["embedded", "hardware-support", "no-std", "no-std::no-alloc"]
 readme = "README.md"
 license = "MIT OR Apache-2.0"
-homepage = "https://github.com/phip1611/uart16550_driver"
-repository = "https://github.com/phip1611/uart16550_driver"
-documentation = "https://docs.rs/uart16550_driver"
+homepage = "https://github.com/rust-osdev/uart_16550"
+repository = "https://github.com/rust-osdev/uart_16550"
+documentation = "https://docs.rs/uart_16550"
 authors = [
   "Philipp Schuster <phip1611@gmail.com>",
 ]

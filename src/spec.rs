@@ -31,7 +31,7 @@ mod errors {
         pub frequency: u32,
         /// The divisor.
         pub divisor: u32,
-        /// The optional prescaler divison factor.
+        /// The optional prescaler division factor.
         pub prescaler_division_factor: Option<u32>,
     }
 
@@ -57,7 +57,7 @@ mod errors {
         pub frequency: u32,
         /// The divisor.
         pub baud_rate: u32,
-        /// The optional prescaler divison factor.
+        /// The optional prescaler division factor.
         pub prescaler_division_factor: Option<u32>,
     }
 
@@ -148,6 +148,8 @@ pub mod registers {
     /// Provides the register offset from the base register.
     pub mod offsets {
         /// The maximum register offset, i.e., the amount of registers.
+        ///
+        /// This maximum index is therefore this value decremented by one.
         pub const MAX: usize = 8;
 
         /// For reads the Receiver Holding Register (RHR) and for writes the
@@ -159,25 +161,29 @@ pub mod registers {
         pub const IER: usize = 1;
 
         /// Interrupt Status Register (ISR).
+        ///
+        /// This register is used on **reads** from offset `2`.
         pub const ISR: usize = 2;
 
         /// FIFO Control Register (FSR).
-        pub const FCR: usize = 3;
+        ///
+        /// This register is used on **writes** to offset `2`.
+        pub const FCR: usize = 2;
 
         /// Line Control Register (LCR).
-        pub const LCR: usize = 4;
+        pub const LCR: usize = 3;
 
         /// Modem Control Register (MCR).
-        pub const MCR: usize = 5;
+        pub const MCR: usize = 4;
 
         /// Line Status Register (LSR).
-        pub const LSR: usize = 6;
+        pub const LSR: usize = 5;
 
         /// Modem Status Register (MSR).
-        pub const MSR: usize = 7;
+        pub const MSR: usize = 6;
 
         /// Scratch Pad Register (SPR).
-        pub const SPR: usize = 8;
+        pub const SPR: usize = 7;
 
         /* Registers accessible only when DLAB = 1 */
 
@@ -207,6 +213,8 @@ pub mod registers {
         /// This register individually enables each of the possible interrupt
         /// sources. A logic "1" in any of these bits enables the corresponding
         /// interrupt, while a logic "0" disables it.
+        ///
+        /// This is a **read/write** register.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
         pub struct IER: u8 {
             /// Enables the data ready interrupt.
@@ -241,8 +249,8 @@ pub mod registers {
     bitflags! {
         /// Typing of the Interrupt Status Register (ISR).
         ///
-        /// The main purpose of this register is to identify the interrupt with
-        /// the highest priority that is currently pending.
+        /// **Read-only** register at offset [`offsets::ISR`] for identifying
+        /// the interrupt with the highest priority that is currently pending.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
         pub struct ISR: u8 {
             /// Indicates whether an interrupt is pending (0) or not
@@ -410,8 +418,9 @@ pub mod registers {
     bitflags! {
         /// Typing of the FIFO Control Register (FCR).
         ///
-        /// Write-only register used to enable or disable FIFOs, clear
-        /// receive/transmit FIFOs, and set the receive trigger level.
+        /// **Write-only** register at offset [`offsets::FCR`] used to enable or
+        /// disable FIFOs, clear receive/transmit FIFOs, and set the receiver
+        /// trigger level.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
         pub struct FCR: u8 {
             /// When set ('1') this bits enables both the transmitter and
@@ -489,7 +498,6 @@ pub mod registers {
     /// Independently of the trigger level of the FIFO, an interrupt will be
     /// generated if there is at least one word in the FIFO and for a time
     /// equivalent to the transmission of four characters.
-    ///
     ///
     /// This type is a convenient and non-ABI compatible abstraction. ABI
     /// compatibility is given via [`FifoTriggerLevel::from_raw_bits`] and
@@ -724,6 +732,8 @@ pub mod registers {
         /// Typing of the Modem Control Register (MCR).
         ///
         /// Controls modem interface output signal.
+        ///
+        /// This is a **read/write** register.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
         pub struct MCR: u8 {
             /// Controls the "data terminal ready" active low output (dtr_n).
@@ -770,6 +780,8 @@ pub mod registers {
         ///
         /// Reports the current status of the transmitter and receiver,
         ///  including data readiness, errors, and transmitter emptiness.
+        ///
+        /// This is a **read-only** register.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
         pub struct LSR: u8 {
             /// It is set if one of more characters have been received and are
@@ -848,6 +860,8 @@ pub mod registers {
         /// Typing of the Modem Status Register (MSR).
         ///
         /// Reflects the current state and change status of modem input.
+        ///
+        /// This is a **read-only** register.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
         pub struct MSR: u8 {
             /// delta-CTS flag. If set, it means that the cts_n input has
@@ -888,22 +902,29 @@ pub mod registers {
     ///
     /// General-purpose read/write register with no defined hardware function,
     /// intended for software use or probing UART presence.
+    ///
+    /// This is a **read/write** register.
     pub type SPR = u8;
 
     /// Typing of the divisor latch register (low byte).
     ///
     /// Used to control the effective baud rate (see [`super::calc_baud_rate`]).
+    ///
+    /// This is a **read/write** register.
     pub type DLL = u8;
 
     /// Typing of the divisor latch register (high byte).
     ///
     /// Used to control the effective baud rate (see [`super::calc_baud_rate`]).
+    ///
+    /// This is a **read/write** register.
     pub type DLM = u8;
 
     /// All legal divisors for [`DLL`] and [`DLM`] that can create a valid and
     /// even baud rate using [`super::calc_baud_rate`].
     #[allow(missing_docs)]
     #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+    #[repr(u16)]
     pub enum Divisor {
         #[default] // => baud rate 115200
         Divisor1,
@@ -1044,7 +1065,6 @@ pub mod registers {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::print;
 
     #[test]
     fn test_calc_baud_rate() {

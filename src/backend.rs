@@ -8,6 +8,7 @@
 //! - [`MmioBackend`]
 
 use crate::spec::registers::offsets;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use core::arch::asm;
 use core::fmt::Debug;
 use core::ptr::{read_volatile, write_volatile};
@@ -48,10 +49,11 @@ impl RegisterAddress for MmioAddress {
     }
 }
 
+#[track_caller]
 fn assert_offset(offset: u8) {
     assert!(
         offset < offsets::MAX as u8,
-        "the offset should be within the expected range: {offset}, expected: < {}",
+        "the offset should be within the expected range: expected {offset} to be less than {}",
         offsets::MAX
     );
 }

@@ -12,7 +12,7 @@ permissions:
 jobs:
   dependabot:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'phip1611/uart16550_driver'
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'rust-osdev/uart_16550'
     steps:
       - name: Approve
         run: gh pr review --approve "$PR_URL"
